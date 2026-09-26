@@ -16,7 +16,7 @@ const prompts = [
     text: "Which loyalty campaigns have the highest uplift right now?",
   },
   {
-    label: "HITL",
+    label: "Approve",
     text: "Approve and deploy campaign C11 Travel Bonus Week to production.",
   },
 ];
@@ -31,7 +31,6 @@ const healthEl = document.getElementById("health");
 const providerEl = document.getElementById("provider");
 const versionEl = document.getElementById("version");
 const pipelineEl = document.getElementById("pipeline");
-const postureEl = document.getElementById("posture");
 const charcount = document.getElementById("charcount");
 const grain = document.getElementById("grain");
 
@@ -61,7 +60,7 @@ function setEmpty() {
   transcript.innerHTML = `
     <div class="empty">
       <strong>Ready when you are</strong>
-      Pick a starter or ask about earn/burn, campaigns, tiers, member ids, or an approval (HITL).
+      Pick a starter or ask about earn/burn rules, campaigns, tiers, member ids, or a production approval.
     </div>`;
 }
 
@@ -90,8 +89,8 @@ function clearSkeleton() {
 }
 
 async function resolveHitl(runId, approve) {
-  statusEl.textContent = approve ? "Resuming graph (approve)…" : "Resuming graph (reject)…";
-  pipelineEl.textContent = "HITL resume";
+  statusEl.textContent = approve ? "Recording approval…" : "Recording rejection…";
+  pipelineEl.textContent = "approval";
   try {
     const res = await fetch(`/api/hitl/${runId}/resolve`, {
       method: "POST",
@@ -102,16 +101,16 @@ async function resolveHitl(runId, approve) {
       }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "HITL resolve failed");
+    if (!res.ok) throw new Error(data.detail || "Approval failed");
     if (data.answer) {
       renderAnswer(data.answer, { runId });
     } else {
       addBubble(
         "assistant",
-        `<h3>HITL ${escapeHtml(data.status)}</h3><p>Run <code>${escapeHtml(runId)}</code> marked <strong>${escapeHtml(data.status)}</strong>.</p>`,
+        `<h3>Approval ${escapeHtml(data.status)}</h3><p>Request <code>${escapeHtml(runId)}</code> was <strong>${escapeHtml(data.status)}</strong>.</p>`,
       );
     }
-    statusEl.textContent = `HITL ${data.status} via LangGraph Command(resume).`;
+    statusEl.textContent = `Marked ${data.status}.`;
     pipelineEl.textContent = "Idle";
   } catch (err) {
     addBubble("assistant", `<h3>Error</h3><p>${escapeHtml(err.message)}</p>`, "error");
@@ -129,19 +128,13 @@ function metricChips(notes = []) {
 function renderAnswer(answer, meta = {}) {
   clearSkeleton();
   const chips = [];
-  (answer.agents_invoked || []).forEach((a) => chips.push(`<span class="chip">${a}</span>`));
-  (answer.patterns_used || []).slice(0, 5).forEach((p) =>
-    chips.push(`<span class="chip">${escapeHtml(p)}</span>`),
-  );
   chips.push(`<span class="chip ok">confidence ${(answer.confidence * 100).toFixed(0)}%</span>`);
-  chips.push(metricChips(answer.guardrail_notes || []));
-  if (answer.guarded) chips.push(`<span class="chip warn">guarded</span>`);
-  if (answer.hitl_status === "pending") chips.push(`<span class="chip danger">HITL pending</span>`);
-  if (answer.hitl_status === "approved") chips.push(`<span class="chip ok">HITL approved</span>`);
-  if (answer.hitl_status === "rejected") chips.push(`<span class="chip danger">HITL rejected</span>`);
+  if (answer.guarded) chips.push(`<span class="chip warn">safety checked</span>`);
+  if (answer.hitl_status === "pending") chips.push(`<span class="chip danger">needs approval</span>`);
+  if (answer.hitl_status === "approved") chips.push(`<span class="chip ok">approved</span>`);
+  if (answer.hitl_status === "rejected") chips.push(`<span class="chip danger">rejected</span>`);
   if (meta.blocked) chips.push(`<span class="chip danger">blocked</span>`);
-  if (meta.runId) chips.push(`<span class="chip">run ${meta.runId}</span>`);
-  if (meta.otel) chips.push(`<span class="chip">otel ${meta.otel.slice(0, 12)}</span>`);
+  if ((answer.sql_used || []).length) chips.push(`<span class="chip">SQL evidence</span>`);
 
   const insights = (answer.insights || []).map((i) => `<li>${escapeHtml(i)}</li>`).join("");
   const actions = (answer.recommended_actions || [])
@@ -161,8 +154,8 @@ function renderAnswer(answer, meta = {}) {
   const hitlControls =
     answer.hitl_status === "pending" && meta.runId
       ? `<div class="hitl-actions">
-          <button type="button" class="hitl-approve" data-run="${escapeHtml(meta.runId)}">Approve &amp; resume</button>
-          <button type="button" class="hitl-reject" data-run="${escapeHtml(meta.runId)}">Reject &amp; resume</button>
+          <button type="button" class="hitl-approve" data-run="${escapeHtml(meta.runId)}">Approve</button>
+          <button type="button" class="hitl-reject" data-run="${escapeHtml(meta.runId)}">Reject</button>
         </div>`
       : "";
 
@@ -226,20 +219,6 @@ async function refreshHealth() {
   }
 }
 
-async function refreshPosture() {
-  try {
-    const res = await fetch("/api/security/owasp");
-    const data = await res.json();
-    postureEl.innerHTML = data.controls
-      .filter((c) => c.status === "mitigated")
-      .slice(0, 6)
-      .map((c) => `<li><strong>${escapeHtml(c.id)}</strong> ${escapeHtml(c.name)}</li>`)
-      .join("");
-  } catch {
-    postureEl.innerHTML = "<li>Security matrix unavailable</li>";
-  }
-}
-
 composer.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = message.value.trim();
@@ -249,8 +228,8 @@ composer.addEventListener("submit", async (event) => {
   message.value = "";
   message.dispatchEvent(new Event("input"));
   send.disabled = true;
-  statusEl.textContent = "Routing supervisor…";
-  pipelineEl.textContent = "supervisor";
+  statusEl.textContent = "Working…";
+  pipelineEl.textContent = "routing";
   showSkeleton();
 
   try {
@@ -276,42 +255,37 @@ composer.addEventListener("submit", async (event) => {
         if (!line) continue;
         const payload = JSON.parse(line.slice(6));
         if (payload.event === "route") {
-          const skills = (payload.skills || []).join(", ");
-          pipelineEl.textContent = (payload.agents || []).join(" → ");
-          statusEl.textContent = skills
-            ? `Live route · skills: ${skills}`
-            : `Agents: ${pipelineEl.textContent}`;
+          pipelineEl.textContent = (payload.agents || []).join(" → ") || "routing";
+          statusEl.textContent = "Figuring out which specialists to use…";
         } else if (payload.event === "handoff") {
           const dest = Array.isArray(payload.to) ? payload.to.join(", ") : payload.to;
-          statusEl.textContent = `Live handoff ${payload.from} → ${dest}`;
-          if (payload.skills?.length) {
-            pipelineEl.textContent = payload.skills.join(" · ");
-          }
+          statusEl.textContent = `Handing off to ${dest}`;
+          pipelineEl.textContent = dest;
         } else if (payload.event === "tools") {
-          statusEl.textContent = `${payload.agent} tools: ${(payload.tools || []).join(", ")}`;
+          statusEl.textContent = `Querying data (${(payload.tools || []).join(", ")})…`;
         } else if (payload.event === "agent") {
-          statusEl.textContent = `${payload.agent} ${payload.status}`;
+          statusEl.textContent = `${payload.agent.replaceAll("_", " ")} ${payload.status}`;
           pipelineEl.textContent = payload.agent;
         } else if (payload.event === "synthesize") {
-          statusEl.textContent = "Synthesizing structured answer…";
-          pipelineEl.textContent = "synthesize";
+          statusEl.textContent = "Writing the answer…";
+          pipelineEl.textContent = "answer";
         } else if (payload.event === "reflection") {
-          statusEl.textContent = "Reflection pass…";
-          pipelineEl.textContent = "reflect";
+          statusEl.textContent = "Double-checking the evidence…";
+          pipelineEl.textContent = "check";
         } else if (payload.event === "hitl") {
           statusEl.textContent =
             payload.status === "pending"
-              ? "LangGraph interrupt — awaiting approval"
-              : `HITL ${payload.status}`;
-          pipelineEl.textContent = "hitl_gate";
+              ? "Needs your approval before anything ships"
+              : `Approval ${payload.status}`;
+          pipelineEl.textContent = "approval";
         } else if (payload.event === "blocked") {
           clearSkeleton();
           renderAnswer(
             {
               summary:
-                "I can't run that request. It looks like prompt-injection or a policy bypass attempt.",
+                "I can't run that request — it looks unsafe or like a policy bypass attempt.",
               insights: payload.notes || [],
-              recommended_actions: ["Ask a loyalty analytics question instead."],
+              recommended_actions: ["Ask a normal loyalty analytics question instead."],
               confidence: 1,
               guarded: true,
               agents_invoked: [],
@@ -319,7 +293,7 @@ composer.addEventListener("submit", async (event) => {
             },
             { blocked: true },
           );
-          statusEl.textContent = "Blocked by input guardrails / gateway policy.";
+          statusEl.textContent = "Blocked for safety.";
           pipelineEl.textContent = "Idle";
         } else if (payload.event === "answer" && payload.answer) {
           renderAnswer(payload.answer, {
@@ -328,13 +302,10 @@ composer.addEventListener("submit", async (event) => {
             otel: payload.otel_trace_id,
           });
           const latency = payload.latency_ms != null ? ` · ${payload.latency_ms} ms` : "";
-          const skills = (payload.skills || []).length
-            ? ` · ${(payload.skills || []).join(", ")}`
-            : "";
           statusEl.textContent =
             payload.answer.hitl_status === "pending"
-              ? `Paused on LangGraph interrupt — approve to resume${latency}`
-              : `Live run complete${latency}${skills}`;
+              ? `Waiting on your Approve / Reject${latency}`
+              : `Done${latency}`;
           pipelineEl.textContent = "Idle";
         }
       }
@@ -352,4 +323,3 @@ composer.addEventListener("submit", async (event) => {
 paintGrain();
 setEmpty();
 refreshHealth();
-refreshPosture();

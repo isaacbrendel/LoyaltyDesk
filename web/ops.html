@@ -20,7 +20,7 @@
         <span class="mark" aria-hidden="true"></span>
         <div>
           <p class="brand">LoyaltyDesk</p>
-          <p class="tag">Ops console — runs, evals, JD proof</p>
+          <p class="tag">Ops — run health and approvals</p>
         </div>
       </div>
       <div class="meta">
@@ -31,17 +31,15 @@
 
     <main class="ops-shell">
       <section class="ops-card">
-        <h1>Live reliability</h1>
-        <p class="lede">Latency, HITL rate, and confidence from recent agent runs.</p>
+        <h1>Run health</h1>
+        <p class="lede">How recent agent runs are performing.</p>
         <div class="stat-grid" id="stats"></div>
       </section>
 
       <section class="ops-card">
-        <h2>Job requirement proof map</h2>
-        <p class="lede">Every JD signal → code path → how to demo it.</p>
-        <div id="proof" class="proof-list"></div>
-        <p class="beyond-label">Beyond expectation</p>
-        <ul id="beyond" class="list"></ul>
+        <h2>Pending approvals</h2>
+        <p class="lede">Program changes waiting on an analyst.</p>
+        <ul id="pending" class="list"></ul>
       </section>
 
       <section class="ops-card wide">
@@ -53,9 +51,8 @@
                 <th>When</th>
                 <th>Latency</th>
                 <th>Confidence</th>
-                <th>HITL</th>
+                <th>Approval</th>
                 <th>Question</th>
-                <th>Patterns</th>
               </tr>
             </thead>
             <tbody id="runs"></tbody>
