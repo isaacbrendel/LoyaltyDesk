@@ -167,9 +167,9 @@ function renderAnswer(answer, meta = {}) {
       ${insights ? `<ul class="list">${insights}</ul>` : ""}
       ${actions ? `<p style="margin-top:.75rem"><strong>Actions</strong></p><ul class="list">${actions}</ul>` : ""}
       ${sql ? `<p style="margin-top:.75rem"><strong>SQL / semantic evidence</strong></p><ul class="list">${sql}</ul>` : ""}
-      ${reflection ? `<p style="margin-top:.75rem"><strong>Reflection</strong></p><ul class="list">${reflection}</ul>` : ""}
+      ${reflection ? `<p style="margin-top:.75rem"><strong>Quality check</strong></p><ul class="list">${reflection}</ul>` : ""}
       ${hitlControls}
-      ${traces ? `<details class="trace"><summary>Trace spans</summary><ul class="list">${traces}</ul></details>` : ""}
+      ${traces ? `<details class="trace"><summary>What ran behind the scenes</summary><ul class="list">${traces}</ul></details>` : ""}
       <div class="meta-row">${chips.join("")}</div>
     `,
   );
