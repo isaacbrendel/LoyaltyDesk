@@ -14,6 +14,10 @@ class AgentState(TypedDict, total=False):
     sql_used: Annotated[list[str], operator.add]
     citations: Annotated[list[dict[str, Any]], operator.add]
     intermediate: Annotated[list[str], operator.add]
+    handoffs: Annotated[list[dict[str, Any]], operator.add]
     answer: AnalystAnswer | None
+    reflection: dict[str, Any] | None
+    hitl: dict[str, Any] | None
+    force_hitl: bool
     error: str | None
     granted_scopes: list[str]

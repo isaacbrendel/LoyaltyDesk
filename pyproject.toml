@@ -1,6 +1,6 @@
 [project]
 name = "loyaltydesk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Production-style loyalty analyst agent platform — LangGraph, tool contracts, Snowflake-backed retrieval, evals, and guardrails."
 readme = "README.md"
 authors = [

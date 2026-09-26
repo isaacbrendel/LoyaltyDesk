@@ -7,6 +7,7 @@ TOOL_SCOPES: dict[ToolName, set[str]] = {
     ToolName.SEARCH_KNOWLEDGE: {"knowledge:read"},
     ToolName.EXPLAIN_RULE: {"knowledge:read", "logic:read"},
     ToolName.MEMBER_SNAPSHOT: {"member:read"},
+    ToolName.ASK_SEMANTIC: {"sql:read"},
 }
 
 ANALYST_SCOPES = {"sql:read", "knowledge:read", "logic:read", "member:read"}

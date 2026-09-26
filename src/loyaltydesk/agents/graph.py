@@ -6,13 +6,15 @@ from typing import Any, Iterator
 
 from langgraph.graph import END, START, StateGraph
 
+from loyaltydesk.agentcore.gateway import GATEWAY
+from loyaltydesk.agentcore.policy import requires_hitl
 from loyaltydesk.agents.planner import demo_tool_calls, maybe_llm_synthesize, plan_route
+from loyaltydesk.agents.reflect import reflect_on_answer
 from loyaltydesk.agents.state import AgentState
 from loyaltydesk.guardrails.pipeline import apply_output_guardrails
 from loyaltydesk.guardrails.tool_scope import ANALYST_SCOPES
 from loyaltydesk.models import AgentRole
 from loyaltydesk.observability.tracing import TraceRecorder
-from loyaltydesk.tools.registry import invoke_tool
 
 
 def _run_calls(
@@ -31,12 +33,16 @@ def _run_calls(
         name = call["name"]
         args = call["args"]
         tracer.emit("tool.start", role=role, tool=name, args=args)
-        try:
-            result = invoke_tool(name, args, granted_scopes=granted_scopes)
-            tool_results.append({"name": name, "args": args, "result": result, "agent": role.value})
-            intermediate.append(f"{role.value}:{name}:ok")
+        payload = GATEWAY.call(name, args, granted_scopes=granted_scopes)
+        payload["agent"] = role.value
+        tool_results.append(payload)
+        if payload.get("ok"):
+            result = payload.get("result")
+            intermediate.append(f"{role.value}:{name}:ok:attempts={payload.get('attempts', 1)}")
             if name == "run_sql" and isinstance(result, dict):
                 sql_used.append(result.get("sql", args.get("sql", "")))
+            if name == "ask_semantic" and isinstance(result, dict) and result.get("resolved"):
+                sql_used.append(result.get("compiled_sql", ""))
             if name == "search_knowledge" and isinstance(result, list):
                 for hit in result:
                     citations.append(
@@ -49,18 +55,23 @@ def _run_calls(
             if name == "explain_loyalty_rule" and isinstance(result, dict):
                 for cite in result.get("citations") or []:
                     citations.append(cite)
-            tracer.emit("tool.end", role=role, tool=name, ok=True)
-        except Exception as exc:  # noqa: BLE001 — surface tool failures into the graph
-            tool_results.append(
-                {
-                    "name": name,
-                    "args": args,
-                    "error": str(exc),
-                    "agent": role.value,
-                }
+            tracer.emit(
+                "tool.end",
+                role=role,
+                tool=name,
+                ok=True,
+                attempts=payload.get("attempts", 1),
             )
-            intermediate.append(f"{role.value}:{name}:error:{exc}")
-            tracer.emit("tool.end", role=role, tool=name, ok=False, error=str(exc))
+        else:
+            intermediate.append(f"{role.value}:{name}:error:{payload.get('error')}")
+            tracer.emit(
+                "tool.end",
+                role=role,
+                tool=name,
+                ok=False,
+                error=payload.get("error"),
+                attempts=payload.get("attempts", 1),
+            )
 
     return {
         "tool_results": tool_results,
@@ -77,7 +88,15 @@ def build_graph(tracer: TraceRecorder | None = None):
         route = plan_route(state["question"])
         tracer.emit("supervisor.route", role=AgentRole.SUPERVISOR, route=[r.value for r in route])
         scopes = state.get("granted_scopes") or sorted(ANALYST_SCOPES)
-        return {"route": route, "granted_scopes": scopes}
+        handoffs = [
+            {
+                "from": AgentRole.SUPERVISOR.value,
+                "to": role.value,
+                "reason": f"Route matched for: {state['question'][:120]}",
+            }
+            for role in route
+        ]
+        return {"route": route, "granted_scopes": scopes, "handoffs": handoffs}
 
     def sql_analyst(state: AgentState) -> dict[str, Any]:
         if AgentRole.SQL_ANALYST not in state.get("route", []):
@@ -122,6 +141,10 @@ def build_graph(tracer: TraceRecorder | None = None):
             citations=state.get("citations") or [],
         )
         answer = apply_output_guardrails(answer)
+        patterns = ["supervisor_router", "tool_calling", "structured_output"]
+        if state.get("handoffs"):
+            patterns.append("subagent_handoff")
+        answer = answer.model_copy(update={"patterns_used": patterns})
         tracer.emit(
             "synthesize.end",
             role=AgentRole.SUPERVISOR,
@@ -130,19 +153,75 @@ def build_graph(tracer: TraceRecorder | None = None):
         )
         return {"answer": answer}
 
+    def reflect(state: AgentState) -> dict[str, Any]:
+        answer = state.get("answer")
+        if answer is None:
+            return {"reflection": {"verdict": "fail", "notes": ["No answer to reflect on."], "score": 0.0}}
+        reflection = reflect_on_answer(
+            state["question"],
+            answer,
+            tool_results=state.get("tool_results") or [],
+        )
+        tracer.emit("reflection", role=AgentRole.SUPERVISOR, **reflection)
+        patterns = list(answer.patterns_used or [])
+        if "reflection" not in patterns:
+            patterns.append("reflection")
+        updated = answer.model_copy(
+            update={
+                "confidence": reflection["adjusted_confidence"],
+                "reflection_notes": reflection["notes"],
+                "patterns_used": patterns,
+            }
+        )
+        return {"answer": updated, "reflection": reflection}
+
+    def hitl_gate(state: AgentState) -> dict[str, Any]:
+        answer = state.get("answer")
+        need = bool(state.get("force_hitl")) or requires_hitl(state["question"])
+        if not need or answer is None:
+            return {"hitl": {"status": "not_required"}}
+        tracer.emit("hitl.pending", role=AgentRole.SUPERVISOR, question=state["question"])
+        patterns = list(answer.patterns_used or [])
+        if "human_in_the_loop" not in patterns:
+            patterns.append("human_in_the_loop")
+        updated = answer.model_copy(
+            update={
+                "hitl_status": "pending",
+                "patterns_used": patterns,
+                "recommended_actions": list(answer.recommended_actions)
+                + ["Awaiting analyst approval before any program change is applied."],
+                "summary": (
+                    answer.summary
+                    + " This proposal is gated for human-in-the-loop approval "
+                    "(program mutation / production push)."
+                ),
+            }
+        )
+        return {
+            "answer": updated,
+            "hitl": {
+                "status": "pending",
+                "reason": "Program mutation or explicit approval requested.",
+            },
+        }
+
     graph = StateGraph(AgentState)
     graph.add_node("supervisor", supervisor)
     graph.add_node("sql_analyst", sql_analyst)
     graph.add_node("knowledge", knowledge)
     graph.add_node("loyalty_logic", loyalty_logic)
     graph.add_node("synthesize", synthesize)
+    graph.add_node("reflect", reflect)
+    graph.add_node("hitl_gate", hitl_gate)
 
     graph.add_edge(START, "supervisor")
     graph.add_edge("supervisor", "sql_analyst")
     graph.add_edge("sql_analyst", "knowledge")
     graph.add_edge("knowledge", "loyalty_logic")
     graph.add_edge("loyalty_logic", "synthesize")
-    graph.add_edge("synthesize", END)
+    graph.add_edge("synthesize", "reflect")
+    graph.add_edge("reflect", "hitl_gate")
+    graph.add_edge("hitl_gate", END)
 
     return graph.compile(), tracer
 
@@ -152,6 +231,7 @@ async def run_agent(
     *,
     session_id: str = "default",
     granted_scopes: set[str] | None = None,
+    force_hitl: bool = False,
 ) -> tuple[Any, TraceRecorder]:
     compiled, tracer = build_graph()
     tracer.emit("run.start", question=question, session_id=session_id)
@@ -163,6 +243,8 @@ async def run_agent(
             "sql_used": [],
             "citations": [],
             "intermediate": [],
+            "handoffs": [],
+            "force_hitl": force_hitl,
             "granted_scopes": sorted(granted_scopes or ANALYST_SCOPES),
         }
     )
@@ -176,6 +258,10 @@ def stream_status(question: str) -> Iterator[dict[str, Any]]:
     route = plan_route(question)
     yield {"event": "route", "agents": [r.value for r in route]}
     for role in route:
+        yield {"event": "handoff", "from": "supervisor", "to": role.value}
         yield {"event": "agent", "agent": role.value, "status": "running"}
         yield {"event": "agent", "agent": role.value, "status": "done"}
     yield {"event": "synthesize", "status": "running"}
+    yield {"event": "reflection", "status": "running"}
+    if requires_hitl(question):
+        yield {"event": "hitl", "status": "pending"}

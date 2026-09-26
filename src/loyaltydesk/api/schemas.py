@@ -19,6 +19,9 @@ class ChatResponse(BaseModel):
     blocked: bool = False
     block_reason: list[str] = Field(default_factory=list)
     traces: list[dict[str, Any]] = Field(default_factory=list)
+    handoffs: list[dict[str, Any]] = Field(default_factory=list)
+    reflection: dict[str, Any] | None = None
+    hitl: dict[str, Any] | None = None
 
 
 class HealthResponse(BaseModel):
@@ -26,3 +29,8 @@ class HealthResponse(BaseModel):
     version: str
     warehouse_ready: bool
     llm_provider: str
+
+
+class HitlResolveRequest(BaseModel):
+    approve: bool
+    note: str = ""

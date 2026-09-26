@@ -84,16 +84,8 @@ def demo_tool_calls(role: AgentRole, question: str) -> list[dict[str, Any]]:
         if "churn" in q or "inactive" in q or "win-back" in q or "winback" in q:
             return [
                 {
-                    "name": "run_sql",
-                    "args": {
-                        "sql": (
-                            "SELECT member_id, tier, points_balance, last_activity, "
-                            "date_diff('day', last_activity, current_date) AS days_inactive "
-                            "FROM members WHERE date_diff('day', last_activity, current_date) >= 45 "
-                            "ORDER BY days_inactive DESC"
-                        ),
-                        "reason": "Identify medium/high churn-risk members",
-                    },
+                    "name": "ask_semantic",
+                    "args": {"question": question},
                 },
                 {
                     "name": "search_knowledge",
@@ -101,42 +93,15 @@ def demo_tool_calls(role: AgentRole, question: str) -> list[dict[str, Any]]:
                 },
             ]
         if "campaign" in q or "uplift" in q:
-            return [
-                {
-                    "name": "run_sql",
-                    "args": {
-                        "sql": (
-                            "SELECT campaign_id, name, target_tier, uplift_pct, status, channel "
-                            "FROM campaigns ORDER BY uplift_pct DESC"
-                        ),
-                        "reason": "Rank campaigns by measured uplift",
-                    },
-                }
-            ]
+            return [{"name": "ask_semantic", "args": {"question": question}}]
         if "tier" in q:
-            return [
-                {
-                    "name": "run_sql",
-                    "args": {
-                        "sql": (
-                            "SELECT tier, COUNT(*) AS members, AVG(points_balance) AS avg_balance, "
-                            "AVG(lifetime_points) AS avg_lifetime FROM members GROUP BY tier "
-                            "ORDER BY avg_lifetime DESC"
-                        ),
-                        "reason": "Tier distribution and engagement",
-                    },
-                }
-            ]
+            return [{"name": "ask_semantic", "args": {"question": question}}]
+        if "region" in q or "semantic" in q or "cortex" in q:
+            return [{"name": "ask_semantic", "args": {"question": question}}]
         return [
             {
-                "name": "run_sql",
-                "args": {
-                    "sql": (
-                        "SELECT region, COUNT(*) AS members, SUM(points_balance) AS points "
-                        "FROM members GROUP BY region ORDER BY members DESC"
-                    ),
-                    "reason": "Regional member footprint",
-                },
+                "name": "ask_semantic",
+                "args": {"question": question},
             }
         ]
 
@@ -169,15 +134,36 @@ def synthesize_answer(
     summary_bits: list[str] = []
 
     for item in tool_results:
+        if item.get("ok") is False:
+            continue
         name = item.get("name")
         result = item.get("result")
         if name == "run_sql" and isinstance(result, dict):
             rows = result.get("rows") or []
             if rows:
                 preview = rows[0]
-                insights.append(f"SQL returned {result.get('row_count', len(rows))} row(s); e.g. {json.dumps(preview, default=str)}.")
+                insights.append(
+                    f"SQL returned {result.get('row_count', len(rows))} row(s); "
+                    f"e.g. {json.dumps(preview, default=str)}."
+                )
             else:
                 insights.append("SQL returned no rows for that slice of program data.")
+        elif name == "ask_semantic" and isinstance(result, dict):
+            if result.get("resolved"):
+                nested = result.get("result") or {}
+                rows = nested.get("rows") or []
+                insights.append(
+                    f"Semantic metric `{result.get('metric')}` "
+                    f"({result.get('description')}) → {nested.get('row_count', len(rows))} row(s)."
+                )
+                if rows:
+                    insights.append(f"Top row: {json.dumps(rows[0], default=str)}.")
+                summary_bits.append(
+                    f"Resolved via Cortex Analyst-shaped semantic model metric "
+                    f"`{result.get('metric')}` for: {question.strip()}"
+                )
+            else:
+                insights.append(result.get("message") or "Semantic model could not resolve metric.")
         elif name == "member_snapshot" and isinstance(result, dict):
             summary_bits.append(
                 f"Member {result['member_id']} is {result['tier']} with {result['points_balance']:,} points "
@@ -189,13 +175,20 @@ def synthesize_answer(
                     f"{', '.join(result.get('preferred_categories') or ['general'])}."
                 )
             else:
-                actions.append("Offer an experiential reward aligned to preferred categories to deepen emotional loyalty.")
+                actions.append(
+                    "Offer an experiential reward aligned to preferred categories "
+                    "to deepen emotional loyalty."
+                )
         elif name == "search_knowledge" and isinstance(result, list):
             for hit in result[:2]:
-                insights.append(f"Knowledge: {hit.get('title')} / {hit.get('section')} — {hit.get('content')}")
+                insights.append(
+                    f"Knowledge: {hit.get('title')} / {hit.get('section')} — {hit.get('content')}"
+                )
                 content = (hit.get("content") or "").lower()
                 if "win-back" in content or "winback" in content or "90+" in content:
-                    actions.append(hit.get("content") or "Run a targeted win-back offer for inactive members.")
+                    actions.append(
+                        hit.get("content") or "Run a targeted win-back offer for inactive members."
+                    )
         elif name == "explain_loyalty_rule" and isinstance(result, dict):
             summary_bits.append(result.get("summary") or "")
             actions.extend(result.get("edge_cases") or [])

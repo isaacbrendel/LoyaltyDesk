@@ -348,6 +348,31 @@ button[type="submit"]:disabled {
   font-size: 0.88rem;
 }
 
+.hitl-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.hitl-actions button {
+  border: 0;
+  border-radius: 0.7rem;
+  padding: 0.55rem 0.9rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hitl-approve {
+  background: var(--ok);
+  color: #f3fff8;
+}
+
+.hitl-reject {
+  background: var(--danger);
+  color: #fff5f5;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

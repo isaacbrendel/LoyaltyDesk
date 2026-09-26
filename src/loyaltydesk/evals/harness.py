@@ -1,4 +1,4 @@
-"""Evaluation harness with golden dataset + regression exit codes for CI."""
+"""Evaluation harness with golden dataset + LLM-as-judge + CI exit codes."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import json
 import sys
 from pathlib import Path
 
-from loyaltydesk.agents.graph import run_agent
+from loyaltydesk.agentcore.runtime import invoke
 from loyaltydesk.data.seed import seed_warehouse
-from loyaltydesk.evals.judges import heuristic_judge
+from loyaltydesk.evals.judges import llm_as_judge
 from loyaltydesk.guardrails.pipeline import apply_input_guardrails
 
 GOLDEN = Path(__file__).with_name("golden.json")
@@ -18,26 +18,30 @@ GOLDEN = Path(__file__).with_name("golden.json")
 async def run_case(case: dict) -> dict:
     guard = apply_input_guardrails(case["question"])
     if not guard.allowed:
-        judge = heuristic_judge(case, blocked=True, answer=None)
+        judge = await llm_as_judge(case, blocked=True, answer=None)
         return {
             "id": case["id"],
             "blocked": True,
             "passed": judge.passed,
             "score": judge.score,
             "reasons": judge.reasons,
+            "judge": judge.judge,
         }
 
-    state, tracer = await run_agent(guard.text, session_id=f"eval-{case['id']}")
-    answer = state["answer"].model_dump(mode="json")
-    judge = heuristic_judge(case, blocked=False, answer=answer)
+    payload = await invoke(guard.text, session_id=f"eval-{case['id']}")
+    answer = payload.get("answer")
+    judge = await llm_as_judge(case, blocked=False, answer=answer)
     return {
         "id": case["id"],
         "blocked": False,
         "passed": judge.passed,
         "score": judge.score,
         "reasons": judge.reasons,
-        "run_id": tracer.run_id,
-        "confidence": answer.get("confidence"),
+        "judge": judge.judge,
+        "run_id": payload.get("run_id"),
+        "confidence": (answer or {}).get("confidence"),
+        "hitl": (answer or {}).get("hitl_status"),
+        "patterns": (answer or {}).get("patterns_used"),
     }
 
 

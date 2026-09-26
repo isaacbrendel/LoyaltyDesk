@@ -15,6 +15,10 @@ const prompts = [
     label: "Campaigns",
     text: "Which loyalty campaigns have the highest uplift right now?",
   },
+  {
+    label: "HITL",
+    text: "Approve and deploy campaign C11 Travel Bonus Week to production.",
+  },
 ];
 
 const transcript = document.getElementById("transcript");
@@ -30,7 +34,7 @@ const sessionId = `web-${crypto.randomUUID().slice(0, 8)}`;
 
 function setEmpty() {
   transcript.innerHTML =
-    '<div class="empty">Pick a starter question or ask about earn/burn rules, campaigns, tiers, or a member id like M1004.</div>';
+    '<div class="empty">Pick a starter question or ask about earn/burn rules, campaigns, tiers, member ids, or an approval (HITL).</div>';
 }
 
 function addBubble(role, html) {
@@ -40,13 +44,40 @@ function addBubble(role, html) {
   div.innerHTML = html;
   transcript.appendChild(div);
   transcript.scrollTop = transcript.scrollHeight;
+  return div;
+}
+
+async function resolveHitl(runId, approve) {
+  statusEl.textContent = approve ? "Approving…" : "Rejecting…";
+  const res = await fetch(`/api/hitl/${runId}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      approve,
+      note: approve ? "Approved from LoyaltyDesk UI" : "Rejected from LoyaltyDesk UI",
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    statusEl.textContent = data.detail || "HITL resolve failed";
+    return;
+  }
+  addBubble(
+    "assistant",
+    `<h3>HITL ${escapeHtml(data.status)}</h3><p>Run <code>${escapeHtml(runId)}</code> marked <strong>${escapeHtml(data.status)}</strong>.</p>`,
+  );
+  statusEl.textContent = `HITL ${data.status}.`;
 }
 
 function renderAnswer(answer, meta = {}) {
   const chips = [];
   (answer.agents_invoked || []).forEach((a) => chips.push(`<span class="chip">${a}</span>`));
+  (answer.patterns_used || []).slice(0, 4).forEach((p) =>
+    chips.push(`<span class="chip">${escapeHtml(p)}</span>`),
+  );
   chips.push(`<span class="chip ok">confidence ${(answer.confidence * 100).toFixed(0)}%</span>`);
   if (answer.guarded) chips.push(`<span class="chip warn">guarded</span>`);
+  if (answer.hitl_status === "pending") chips.push(`<span class="chip danger">HITL pending</span>`);
   if (meta.blocked) chips.push(`<span class="chip danger">blocked</span>`);
   if (meta.runId) chips.push(`<span class="chip">run ${meta.runId}</span>`);
 
@@ -59,18 +90,38 @@ function renderAnswer(answer, meta = {}) {
   const sql = (answer.sql_used || [])
     .map((s) => `<li><code>${escapeHtml(s)}</code></li>`)
     .join("");
+  const reflection = (answer.reflection_notes || [])
+    .map((i) => `<li>${escapeHtml(i)}</li>`)
+    .join("");
 
-  addBubble(
+  const hitlControls =
+    answer.hitl_status === "pending" && meta.runId
+      ? `<div class="hitl-actions">
+          <button type="button" class="hitl-approve" data-run="${escapeHtml(meta.runId)}">Approve</button>
+          <button type="button" class="hitl-reject" data-run="${escapeHtml(meta.runId)}">Reject</button>
+        </div>`
+      : "";
+
+  const bubble = addBubble(
     "assistant",
     `
       <h3>LoyaltyDesk</h3>
       <p>${escapeHtml(answer.summary)}</p>
       ${insights ? `<ul class="list">${insights}</ul>` : ""}
       ${actions ? `<p style="margin-top:.75rem"><strong>Actions</strong></p><ul class="list">${actions}</ul>` : ""}
-      ${sql ? `<p style="margin-top:.75rem"><strong>SQL evidence</strong></p><ul class="list">${sql}</ul>` : ""}
+      ${sql ? `<p style="margin-top:.75rem"><strong>SQL / semantic evidence</strong></p><ul class="list">${sql}</ul>` : ""}
+      ${reflection ? `<p style="margin-top:.75rem"><strong>Reflection</strong></p><ul class="list">${reflection}</ul>` : ""}
+      ${hitlControls}
       <div class="meta-row">${chips.join("")}</div>
     `,
   );
+
+  bubble.querySelectorAll(".hitl-approve").forEach((btn) => {
+    btn.addEventListener("click", () => resolveHitl(btn.dataset.run, true));
+  });
+  bubble.querySelectorAll(".hitl-reject").forEach((btn) => {
+    btn.addEventListener("click", () => resolveHitl(btn.dataset.run, false));
+  });
 }
 
 function escapeHtml(value) {
@@ -137,10 +188,16 @@ composer.addEventListener("submit", async (event) => {
         const payload = JSON.parse(line.slice(6));
         if (payload.event === "route") {
           statusEl.textContent = `Agents: ${(payload.agents || []).join(" → ")}`;
+        } else if (payload.event === "handoff") {
+          statusEl.textContent = `Handoff ${payload.from} → ${payload.to}`;
         } else if (payload.event === "agent") {
           statusEl.textContent = `${payload.agent} ${payload.status}`;
         } else if (payload.event === "synthesize") {
           statusEl.textContent = "Synthesizing structured answer…";
+        } else if (payload.event === "reflection") {
+          statusEl.textContent = "Reflection pass…";
+        } else if (payload.event === "hitl") {
+          statusEl.textContent = "HITL gate — awaiting approval";
         } else if (payload.event === "blocked") {
           renderAnswer(
             {
@@ -158,7 +215,10 @@ composer.addEventListener("submit", async (event) => {
           statusEl.textContent = "Blocked by input guardrails.";
         } else if (payload.event === "answer" && payload.answer) {
           renderAnswer(payload.answer, { runId: payload.run_id });
-          statusEl.textContent = "Done. Trace persisted under data/traces.";
+          statusEl.textContent =
+            payload.answer.hitl_status === "pending"
+              ? "Paused for human approval."
+              : "Done. Trace persisted under data/traces.";
         }
       }
     }

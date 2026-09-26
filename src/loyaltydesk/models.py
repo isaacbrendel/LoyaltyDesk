@@ -21,6 +21,7 @@ class ToolName(str, Enum):
     SEARCH_KNOWLEDGE = "search_knowledge"
     EXPLAIN_RULE = "explain_loyalty_rule"
     MEMBER_SNAPSHOT = "member_snapshot"
+    ASK_SEMANTIC = "ask_semantic"
 
 
 class Citation(BaseModel):
@@ -79,6 +80,9 @@ class AnalystAnswer(BaseModel):
     agents_invoked: list[AgentRole] = Field(default_factory=list)
     guarded: bool = False
     guardrail_notes: list[str] = Field(default_factory=list)
+    reflection_notes: list[str] = Field(default_factory=list)
+    patterns_used: list[str] = Field(default_factory=list)
+    hitl_status: str | None = None  # None | pending | approved | rejected
 
     @field_validator("summary")
     @classmethod

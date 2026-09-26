@@ -17,6 +17,7 @@ from loyaltydesk.models import (
     ToolName,
 )
 from loyaltydesk.snowflake.client import get_client
+from loyaltydesk.snowflake.semantic_model import ask_semantic as run_semantic
 
 
 class RunSqlArgs(BaseModel):
@@ -35,6 +36,10 @@ class ExplainRuleArgs(BaseModel):
 
 class MemberSnapshotArgs(BaseModel):
     member_id: str
+
+
+class AskSemanticArgs(BaseModel):
+    question: str = Field(description="Business-language metric question for Cortex Analyst stand-in")
 
 
 def _churn_risk(last_activity: str, points_balance: int) -> str:
@@ -102,11 +107,16 @@ def member_snapshot(args: MemberSnapshotArgs) -> MemberSnapshot:
     )
 
 
+def ask_semantic(args: AskSemanticArgs) -> dict[str, Any]:
+    return run_semantic(args.question)
+
+
 TOOL_IMPLS: dict[ToolName, Callable[[BaseModel], Any]] = {
     ToolName.RUN_SQL: run_sql,
     ToolName.SEARCH_KNOWLEDGE: search_knowledge,
     ToolName.EXPLAIN_RULE: explain_loyalty_rule,
     ToolName.MEMBER_SNAPSHOT: member_snapshot,
+    ToolName.ASK_SEMANTIC: ask_semantic,
 }
 
 TOOL_ARGS: dict[ToolName, type[BaseModel]] = {
@@ -114,6 +124,7 @@ TOOL_ARGS: dict[ToolName, type[BaseModel]] = {
     ToolName.SEARCH_KNOWLEDGE: SearchKnowledgeArgs,
     ToolName.EXPLAIN_RULE: ExplainRuleArgs,
     ToolName.MEMBER_SNAPSHOT: MemberSnapshotArgs,
+    ToolName.ASK_SEMANTIC: AskSemanticArgs,
 }
 
 TOOL_SPECS: list[dict[str, Any]] = [
@@ -140,6 +151,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": "Fetch a member loyalty snapshot without dumping raw PII into the answer.",
         "args_schema": MemberSnapshotArgs.model_json_schema(),
         "scopes": ["member:read"],
+    },
+    {
+        "name": ToolName.ASK_SEMANTIC.value,
+        "description": (
+            "Ask the Cortex Analyst-shaped semantic model; compiles to verified metric SQL."
+        ),
+        "args_schema": AskSemanticArgs.model_json_schema(),
+        "scopes": ["sql:read"],
     },
 ]
 

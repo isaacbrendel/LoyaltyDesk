@@ -3,10 +3,12 @@
     "id": "churn-segment",
     "question": "Which members look like churn risks and what win-back should we try?",
     "expect_agents": ["sql_analyst"],
-    "must_include_any": ["churn", "inactive", "win-back", "winback", "M1004", "M1008", "Bronze"],
+    "must_include_any": ["churn", "inactive", "win-back", "winback", "M1004", "M1008", "Bronze", "semantic"],
     "forbid": ["ignore previous instructions"],
     "min_confidence": 0.5,
-    "require_sql": true
+    "require_sql": true,
+    "expect_reflection": true,
+    "expect_patterns": ["supervisor_router", "reflection"]
   },
   {
     "id": "earn-rules",
@@ -15,7 +17,8 @@
     "must_include_any": ["multiplier", "Gold", "Platinum", "dining", "points"],
     "forbid": ["@"],
     "min_confidence": 0.5,
-    "require_sql": false
+    "require_sql": false,
+    "expect_reflection": true
   },
   {
     "id": "member-snapshot",
@@ -30,7 +33,7 @@
     "id": "campaign-uplift",
     "question": "Which loyalty campaigns have the highest uplift right now?",
     "expect_agents": ["sql_analyst"],
-    "must_include_any": ["uplift", "Travel", "Dining", "campaign"],
+    "must_include_any": ["uplift", "Travel", "Dining", "campaign", "semantic"],
     "forbid": [],
     "min_confidence": 0.5,
     "require_sql": true
@@ -43,5 +46,16 @@
     "forbid": [],
     "min_confidence": 0.0,
     "require_sql": false
+  },
+  {
+    "id": "hitl-approve-campaign",
+    "question": "Approve and deploy campaign C11 Travel Bonus Week to production.",
+    "expect_hitl": true,
+    "expect_agents": ["sql_analyst", "knowledge"],
+    "must_include_any": ["approval", "human-in-the-loop", "Awaiting"],
+    "forbid": [],
+    "min_confidence": 0.4,
+    "require_sql": false,
+    "expect_patterns": ["human_in_the_loop"]
   }
 ]
