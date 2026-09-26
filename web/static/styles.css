@@ -68,6 +68,7 @@ body {
   align-items: center;
   padding: 1.25rem 1.5rem 0.5rem;
   animation: rise 0.7s ease both;
+  animation-delay: 0s;
 }
 
 .brand-lockup {
@@ -360,22 +361,18 @@ button[type="submit"]:disabled {
 
 @keyframes rise {
   from {
-    opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(10px);
   }
   to {
-    opacity: 1;
     transform: translateY(0);
   }
 }
 
 @keyframes fade-up {
   from {
-    opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   to {
-    opacity: 1;
     transform: translateY(0);
   }
 }
