@@ -6,7 +6,8 @@ https://docs.langchain.com/oss/python/langgraph/interrupts
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+import time
+from typing import Any, AsyncIterator, Iterator
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -14,7 +15,12 @@ from langgraph.types import Command, interrupt
 
 from loyaltydesk.agentcore.gateway import GATEWAY
 from loyaltydesk.agentcore.policy import requires_hitl
-from loyaltydesk.agents.planner import demo_tool_calls, maybe_llm_synthesize, plan_route
+from loyaltydesk.agents.planner import (
+    demo_tool_calls,
+    maybe_llm_synthesize,
+    plan_route,
+    skills_for_question,
+)
 from loyaltydesk.agents.reflect import reflect_on_answer
 from loyaltydesk.agents.state import AgentState
 from loyaltydesk.evals.metrics import score_answer
@@ -22,6 +28,7 @@ from loyaltydesk.guardrails.pipeline import apply_output_guardrails
 from loyaltydesk.guardrails.tool_scope import ANALYST_SCOPES
 from loyaltydesk.models import AgentRole
 from loyaltydesk.observability.otel import OtelTracer
+from loyaltydesk.observability.run_store import RUN_STORE, RunCard, now_iso
 from loyaltydesk.observability.tracing import TraceRecorder
 
 # Process-wide checkpointer so HITL can resume by thread_id (AgentCore Memory seam).
@@ -35,8 +42,9 @@ def _run_calls(
     tracer: TraceRecorder,
     *,
     session_key: str,
+    history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    calls = demo_tool_calls(role, question)
+    calls = demo_tool_calls(role, question, history=history)
     tool_results: list[dict[str, Any]] = []
     sql_used: list[str] = []
     citations: list[dict[str, Any]] = []
@@ -96,8 +104,15 @@ def build_graph(tracer: TraceRecorder | None = None):
     tracer = tracer or TraceRecorder()
 
     def supervisor(state: AgentState) -> dict[str, Any]:
-        route = plan_route(state["question"])
-        tracer.emit("supervisor.route", role=AgentRole.SUPERVISOR, route=[r.value for r in route])
+        history = state.get("history") or []
+        route = plan_route(state["question"], history)
+        skills = skills_for_question(state["question"])
+        tracer.emit(
+            "supervisor.route",
+            role=AgentRole.SUPERVISOR,
+            route=[r.value for r in route],
+            skills=skills,
+        )
         scopes = state.get("granted_scopes") or sorted(ANALYST_SCOPES)
         handoffs = [
             {
@@ -107,7 +122,12 @@ def build_graph(tracer: TraceRecorder | None = None):
             }
             for role in route
         ]
-        return {"route": route, "granted_scopes": scopes, "handoffs": handoffs}
+        return {
+            "route": route,
+            "granted_scopes": scopes,
+            "handoffs": handoffs,
+            "skills_used": skills,
+        }
 
     def sql_analyst(state: AgentState) -> dict[str, Any]:
         if AgentRole.SQL_ANALYST not in state.get("route", []):
@@ -119,6 +139,7 @@ def build_graph(tracer: TraceRecorder | None = None):
             set(state.get("granted_scopes") or ANALYST_SCOPES),
             tracer,
             session_key=state.get("session_id") or "default",
+            history=state.get("history") or [],
         )
 
     def knowledge(state: AgentState) -> dict[str, Any]:
@@ -131,6 +152,7 @@ def build_graph(tracer: TraceRecorder | None = None):
             set(state.get("granted_scopes") or ANALYST_SCOPES),
             tracer,
             session_key=state.get("session_id") or "default",
+            history=state.get("history") or [],
         )
 
     def loyalty_logic(state: AgentState) -> dict[str, Any]:
@@ -143,6 +165,7 @@ def build_graph(tracer: TraceRecorder | None = None):
             set(state.get("granted_scopes") or ANALYST_SCOPES),
             tracer,
             session_key=state.get("session_id") or "default",
+            history=state.get("history") or [],
         )
 
     async def synthesize(state: AgentState) -> dict[str, Any]:
@@ -153,6 +176,7 @@ def build_graph(tracer: TraceRecorder | None = None):
             tool_results=state.get("tool_results") or [],
             sql_used=state.get("sql_used") or [],
             citations=state.get("citations") or [],
+            history=state.get("history") or [],
         )
         answer = apply_output_guardrails(answer)
         patterns = ["supervisor_router", "tool_calling", "structured_output"]
@@ -267,60 +291,231 @@ def _thread_config(session_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": session_id}}
 
 
+def _pending_hitl_patch(state: dict[str, Any]) -> dict[str, Any]:
+    interrupted = bool(state.get("__interrupt__"))
+    if not interrupted:
+        return state
+    answer = state.get("answer")
+    if answer is not None:
+        patterns = list(answer.patterns_used or [])
+        for p in ("human_in_the_loop", "langgraph_interrupt"):
+            if p not in patterns:
+                patterns.append(p)
+        state["answer"] = answer.model_copy(
+            update={
+                "hitl_status": "pending",
+                "patterns_used": patterns,
+                "summary": answer.summary
+                + " Awaiting human-in-the-loop approval (LangGraph interrupt).",
+                "recommended_actions": list(answer.recommended_actions)
+                + ["Awaiting analyst approval before any program change is applied."],
+            }
+        )
+    state["hitl"] = {
+        "status": "pending",
+        "interrupt": [getattr(i, "value", i) for i in (state.get("__interrupt__") or [])],
+    }
+    return state
+
+
+def _record_run(
+    *,
+    question: str,
+    session_id: str,
+    state: dict[str, Any],
+    tracer: TraceRecorder,
+    otel: OtelTracer,
+    started: float,
+    interrupted: bool,
+) -> None:
+    answer = state.get("answer")
+    notes = list(getattr(answer, "guardrail_notes", []) or [])
+    faith = next((n.split("=", 1)[1] for n in notes if n.startswith("faithfulness=")), None)
+    ground = next((n.split("=", 1)[1] for n in notes if n.startswith("groundedness=")), None)
+    RUN_STORE.record(
+        RunCard(
+            run_id=tracer.run_id,
+            session_id=session_id,
+            question=question,
+            started_at=now_iso(),
+            finished_at=now_iso(),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            interrupted=interrupted,
+            hitl_status=getattr(answer, "hitl_status", None),
+            patterns=list(getattr(answer, "patterns_used", []) or []),
+            agents=[a.value if hasattr(a, "value") else str(a) for a in (getattr(answer, "agents_invoked", []) or [])],
+            sql_count=len(getattr(answer, "sql_used", []) or []),
+            confidence=float(getattr(answer, "confidence", 0) or 0),
+            faithfulness=float(faith) if faith else None,
+            groundedness=float(ground) if ground else None,
+            otel_trace_id=otel.trace_id,
+            summary=(getattr(answer, "summary", "") or "")[:240],
+        )
+    )
+
+
+def _initial_state(
+    question: str,
+    *,
+    session_id: str,
+    granted_scopes: set[str] | None,
+    force_hitl: bool,
+    history: list[dict[str, str]] | None,
+) -> dict[str, Any]:
+    return {
+        "question": question,
+        "session_id": session_id,
+        "history": history or [],
+        "tool_results": [],
+        "sql_used": [],
+        "citations": [],
+        "intermediate": [],
+        "handoffs": [],
+        "skills_used": [],
+        "force_hitl": force_hitl,
+        "granted_scopes": sorted(granted_scopes or ANALYST_SCOPES),
+    }
+
+
 async def run_agent(
     question: str,
     *,
     session_id: str = "default",
     granted_scopes: set[str] | None = None,
     force_hitl: bool = False,
+    history: list[dict[str, str]] | None = None,
 ) -> tuple[Any, TraceRecorder, OtelTracer]:
     compiled, tracer = build_graph()
     otel = OtelTracer()
+    started = time.perf_counter()
     tracer.emit("run.start", question=question, session_id=session_id)
     with otel.span("loyaltydesk.run", session_id=session_id, question=question[:160]):
         state = await compiled.ainvoke(
-            {
-                "question": question,
-                "session_id": session_id,
-                "tool_results": [],
-                "sql_used": [],
-                "citations": [],
-                "intermediate": [],
-                "handoffs": [],
-                "force_hitl": force_hitl,
-                "granted_scopes": sorted(granted_scopes or ANALYST_SCOPES),
-            },
+            _initial_state(
+                question,
+                session_id=session_id,
+                granted_scopes=granted_scopes,
+                force_hitl=force_hitl,
+                history=history,
+            ),
             config=_thread_config(session_id),
         )
     interrupted = bool(state.get("__interrupt__"))
-    if interrupted:
-        # Surface pending HITL on the draft answer for the UI.
-        answer = state.get("answer")
-        if answer is not None:
-            patterns = list(answer.patterns_used or [])
-            for p in ("human_in_the_loop", "langgraph_interrupt"):
-                if p not in patterns:
-                    patterns.append(p)
-            state["answer"] = answer.model_copy(
-                update={
-                    "hitl_status": "pending",
-                    "patterns_used": patterns,
-                    "summary": answer.summary
-                    + " Awaiting human-in-the-loop approval (LangGraph interrupt).",
-                    "recommended_actions": list(answer.recommended_actions)
-                    + ["Awaiting analyst approval before any program change is applied."],
-                }
-            )
-        state["hitl"] = {
-            "status": "pending",
-            "interrupt": [
-                getattr(i, "value", i) for i in (state.get("__interrupt__") or [])
-            ],
-        }
+    state = _pending_hitl_patch(state)
     tracer.emit("run.end", ok=state.get("answer") is not None, interrupted=interrupted)
     tracer.persist()
     otel.persist()
+    _record_run(
+        question=question,
+        session_id=session_id,
+        state=state,
+        tracer=tracer,
+        otel=otel,
+        started=started,
+        interrupted=interrupted,
+    )
     return state, tracer, otel
+
+
+async def stream_agent(
+    question: str,
+    *,
+    session_id: str = "default",
+    granted_scopes: set[str] | None = None,
+    force_hitl: bool = False,
+    history: list[dict[str, str]] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield live LangGraph node updates, then a final answer payload."""
+    compiled, tracer = build_graph()
+    otel = OtelTracer()
+    started = time.perf_counter()
+    config = _thread_config(session_id)
+    tracer.emit("run.start", question=question, session_id=session_id)
+    yield {
+        "event": "route",
+        "agents": [r.value for r in plan_route(question, history)],
+        "skills": skills_for_question(question),
+    }
+
+    with otel.span("loyaltydesk.run", session_id=session_id, question=question[:160]):
+        async for update in compiled.astream(
+            _initial_state(
+                question,
+                session_id=session_id,
+                granted_scopes=granted_scopes,
+                force_hitl=force_hitl,
+                history=history,
+            ),
+            config=config,
+            stream_mode="updates",
+        ):
+            for node_name, payload in update.items():
+                data = payload or {}
+                if node_name == "supervisor":
+                    yield {
+                        "event": "handoff",
+                        "from": "supervisor",
+                        "to": [
+                            r.value if hasattr(r, "value") else r
+                            for r in (data.get("route") or [])
+                        ],
+                        "skills": data.get("skills_used") or [],
+                    }
+                elif node_name in {"sql_analyst", "knowledge", "loyalty_logic"}:
+                    yield {"event": "agent", "agent": node_name, "status": "running"}
+                    tools = [
+                        t.get("name")
+                        for t in (data.get("tool_results") or [])
+                        if isinstance(t, dict)
+                    ]
+                    if tools:
+                        yield {"event": "tools", "agent": node_name, "tools": tools}
+                    yield {"event": "agent", "agent": node_name, "status": "done"}
+                elif node_name == "synthesize":
+                    yield {"event": "synthesize", "status": "done"}
+                elif node_name == "reflect":
+                    yield {
+                        "event": "reflection",
+                        "status": "done",
+                        "notes": (data.get("reflection") or {}).get("notes") or [],
+                    }
+                elif node_name == "hitl_gate":
+                    yield {"event": "hitl", "status": (data.get("hitl") or {}).get("status", "done")}
+
+        snap = await compiled.aget_state(config)
+        state = dict(snap.values)
+        if snap.interrupts:
+            state["__interrupt__"] = list(snap.interrupts)
+            yield {"event": "hitl", "status": "pending"}
+
+    state = _pending_hitl_patch(state)
+    interrupted = bool(state.get("__interrupt__"))
+    tracer.emit("run.end", ok=state.get("answer") is not None, interrupted=interrupted)
+    tracer.persist()
+    otel.persist()
+    _record_run(
+        question=question,
+        session_id=session_id,
+        state=state,
+        tracer=tracer,
+        otel=otel,
+        started=started,
+        interrupted=interrupted,
+    )
+    answer = state.get("answer")
+    yield {
+        "event": "answer",
+        "run_id": tracer.run_id,
+        "answer": answer.model_dump(mode="json") if answer else None,
+        "traces": tracer.as_dicts(),
+        "handoffs": state.get("handoffs") or [],
+        "reflection": state.get("reflection"),
+        "hitl": state.get("hitl"),
+        "skills": state.get("skills_used") or skills_for_question(question),
+        "interrupted": interrupted,
+        "otel_trace_id": otel.trace_id,
+        "latency_ms": int((time.perf_counter() - started) * 1000),
+    }
 
 
 async def resume_agent(
@@ -341,9 +536,9 @@ async def resume_agent(
     return state, tracer
 
 
-def stream_status(question: str) -> Iterator[dict[str, Any]]:
-    route = plan_route(question)
-    yield {"event": "route", "agents": [r.value for r in route]}
+def stream_status(question: str, history: list[dict[str, str]] | None = None) -> Iterator[dict[str, Any]]:
+    route = plan_route(question, history)
+    yield {"event": "route", "agents": [r.value for r in route], "skills": skills_for_question(question)}
     for role in route:
         yield {"event": "handoff", "from": "supervisor", "to": role.value}
         yield {"event": "agent", "agent": role.value, "status": "running"}

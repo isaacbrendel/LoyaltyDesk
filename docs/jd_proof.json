@@ -1,0 +1,61 @@
+{
+  "role": "AI Engineer — loyalty / AgentCore platform",
+  "candidate_artifact": "LoyaltyDesk",
+  "beyond_expectation": [
+    "LangGraph-native interrupt()/Command HITL with checkpointer (not a boolean flag)",
+    "OTEL-shaped spans matching AgentCore CloudWatch GenAI observability",
+    "Gateway policy + rate limit + circuit breaker outside the model loop",
+    "Cortex Analyst-shaped semantic metrics with compiled SQL",
+    "Golden + adversarial OWASP eval suite gated in CI",
+    "Live LangGraph node streaming to the analyst UI",
+    "Ops console with latency, faithfulness, groundedness, run history",
+    "Documented research citations and interview walkthrough"
+  ],
+  "requirements": [
+    {
+      "jd": "Build agent harnesses (Python, LangChain/LangGraph)",
+      "proof": "src/loyaltydesk/agents/graph.py",
+      "demo": "Run any starter; watch live node stream"
+    },
+    {
+      "jd": "Tool-calling, structured outputs, retries, streaming, memory",
+      "proof": "tools/registry.py, agentcore/gateway.py, memory.py, /api/chat/stream",
+      "demo": "Multi-turn follow-up after a member snapshot"
+    },
+    {
+      "jd": "Package for AgentCore Runtime (context, tools, skills, subagents)",
+      "proof": "agentcore/manifest.py + GET /api/agentcore/manifest",
+      "demo": "curl /api/agentcore/manifest"
+    },
+    {
+      "jd": "SQL against Snowflake + Snowflake-backed knowledge retrieval",
+      "proof": "snowflake/client.py, semantic_model.py, search_knowledge",
+      "demo": "Churn / Campaigns starters"
+    },
+    {
+      "jd": "Evaluation harnesses, golden datasets, LLM-as-judge, CI",
+      "proof": "evals/ + .github/workflows/ci.yml",
+      "demo": "uv run loyaltydesk-eval"
+    },
+    {
+      "jd": "Guardrails: auth scopes, validation, PII, injection, hallucination",
+      "proof": "guardrails/, security/owasp.py, reflection + metrics",
+      "demo": "Injection starter blocked; email never leaks"
+    },
+    {
+      "jd": "Multi-agent: supervisor/router, handoff, reflection, HITL",
+      "proof": "agents/graph.py patterns_used",
+      "demo": "HITL starter → Approve & resume"
+    },
+    {
+      "jd": "Observability (OTEL / CloudWatch / LangSmith-class)",
+      "proof": "observability/otel.py, traces JSONL, ops console",
+      "demo": "Open /ops"
+    },
+    {
+      "jd": "Loyalty / MarTech domain fluency",
+      "proof": "seed handbook + earn/burn/churn playbooks",
+      "demo": "Rules + Churn questions"
+    }
+  ]
+}

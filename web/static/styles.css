@@ -133,6 +133,10 @@ body {
   white-space: nowrap;
 }
 
+a.pill.link {
+  text-decoration: none;
+}
+
 .shell {
   display: grid;
   grid-template-columns: minmax(17rem, 0.95fr) minmax(20rem, 1.25fr);

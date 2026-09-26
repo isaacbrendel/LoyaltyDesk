@@ -4,7 +4,7 @@
 
 Repo: [isaacbrendel/genesis](https://cursor.com/codebase/isaacbrendel/genesis)
 
-Deep research notes (citations): [`docs/RESEARCH.md`](docs/RESEARCH.md) · Interview script: [`docs/INTERVIEW.md`](docs/INTERVIEW.md)
+**Hiring packet:** [`docs/CASE_STUDY.md`](docs/CASE_STUDY.md) · [`docs/INTERVIEW.md`](docs/INTERVIEW.md) · [`docs/RESEARCH.md`](docs/RESEARCH.md) · live proof map at `/ops`
 
 ## What it shows (mapped to the role)
 

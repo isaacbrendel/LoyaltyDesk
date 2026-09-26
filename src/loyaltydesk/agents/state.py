@@ -9,6 +9,7 @@ from loyaltydesk.models import AgentRole, AnalystAnswer
 class AgentState(TypedDict, total=False):
     question: str
     session_id: str
+    history: list[dict[str, str]]
     route: list[AgentRole]
     tool_results: Annotated[list[dict[str, Any]], operator.add]
     sql_used: Annotated[list[str], operator.add]
@@ -21,3 +22,4 @@ class AgentState(TypedDict, total=False):
     force_hitl: bool
     error: str | None
     granted_scopes: list[str]
+    skills_used: list[str]

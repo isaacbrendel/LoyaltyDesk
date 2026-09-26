@@ -10,8 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from loyaltydesk import __version__
 from loyaltydesk.agentcore.manifest import get_manifest
-from loyaltydesk.agentcore.runtime import invoke, resume
-from loyaltydesk.agents.graph import stream_status
+from loyaltydesk.agentcore.runtime import invoke, invoke_stream, resume
 from loyaltydesk.agents.planner import available_provider
 from loyaltydesk.api.schemas import ChatRequest, ChatResponse, HealthResponse, HitlResolveRequest
 from loyaltydesk.config import get_settings
@@ -20,10 +19,12 @@ from loyaltydesk.guardrails.pipeline import apply_input_guardrails
 from loyaltydesk.hitl import HITL_STORE
 from loyaltydesk.memory import MEMORY
 from loyaltydesk.models import AnalystAnswer
+from loyaltydesk.observability.run_store import RUN_STORE
 from loyaltydesk.security.owasp import control_matrix
 from loyaltydesk.snowflake.semantic_model import list_metrics
 
 WEB_DIR = Path(__file__).resolve().parents[3] / "web"
+DOCS_DIR = Path(__file__).resolve().parents[3] / "docs"
 
 
 @asynccontextmanager
@@ -47,12 +48,21 @@ if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
 
+def _page(name: str) -> HTMLResponse:
+    path = WEB_DIR / name
+    if not path.exists():
+        return HTMLResponse(f"<h1>Missing {name}</h1>", status_code=404)
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
-    index_path = WEB_DIR / "index.html"
-    if not index_path.exists():
-        return HTMLResponse("<h1>LoyaltyDesk API</h1><p>UI bundle missing.</p>")
-    return HTMLResponse(index_path.read_text(encoding="utf-8"))
+    return _page("index.html")
+
+
+@app.get("/ops", response_class=HTMLResponse)
+def ops() -> HTMLResponse:
+    return _page("ops.html")
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -80,6 +90,17 @@ def agentcore_manifest() -> dict:
 @app.get("/api/security/owasp")
 def owasp_matrix() -> dict:
     return control_matrix()
+
+
+@app.get("/api/jd-proof")
+def jd_proof() -> dict:
+    path = DOCS_DIR / "jd_proof.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/ops/runs")
+def ops_runs(limit: int = 25) -> dict:
+    return {"stats": RUN_STORE.stats(), "runs": RUN_STORE.recent(limit)}
 
 
 @app.get("/api/semantic/metrics")
@@ -186,32 +207,18 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
     guard = apply_input_guardrails(body.message)
     if not guard.allowed:
         async def blocked():
-            payload = {"event": "blocked", "notes": guard.notes}
-            yield f"data: {json.dumps(payload)}\n\n"
+            yield f"data: {json.dumps({'event': 'blocked', 'notes': guard.notes})}\n\n"
             yield 'data: {"event": "done"}\n\n'
 
         return StreamingResponse(blocked(), media_type="text/event-stream")
 
+    MEMORY.add(body.session_id, "user", guard.text)
+
     async def events():
-        for status in stream_status(guard.text):
-            yield f"data: {json.dumps(status)}\n\n"
-        payload = await invoke(guard.text, session_id=body.session_id)
-        if payload.get("blocked"):
-            yield f"data: {json.dumps({'event': 'blocked', 'notes': payload.get('notes')})}\n\n"
-            yield 'data: {"event": "done"}\n\n'
-            return
-        out = {
-            "event": "answer",
-            "run_id": payload.get("run_id"),
-            "answer": payload.get("answer"),
-            "traces": payload.get("traces") or [],
-            "handoffs": payload.get("handoffs") or [],
-            "reflection": payload.get("reflection"),
-            "hitl": payload.get("hitl"),
-            "interrupted": payload.get("interrupted"),
-            "otel_trace_id": payload.get("otel_trace_id"),
-        }
-        yield f"data: {json.dumps(out)}\n\n"
+        async for payload in invoke_stream(guard.text, session_id=body.session_id):
+            if payload.get("event") == "answer" and payload.get("answer"):
+                MEMORY.add(body.session_id, "assistant", payload["answer"].get("summary", ""))
+            yield f"data: {json.dumps(payload)}\n\n"
         yield 'data: {"event": "done"}\n\n'
 
     return StreamingResponse(events(), media_type="text/event-stream")

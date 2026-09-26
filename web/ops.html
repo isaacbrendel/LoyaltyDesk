@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoyaltyDesk Ops</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,600&family=Fraunces:opsz,wght@9..144,650;9..144,700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/ops.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+    <header class="top">
+      <div class="brand-lockup">
+        <span class="mark" aria-hidden="true"></span>
+        <div>
+          <p class="brand">LoyaltyDesk</p>
+          <p class="tag">Ops console — runs, evals, JD proof</p>
+        </div>
+      </div>
+      <div class="meta">
+        <a class="pill link" href="/">Workbench</a>
+        <span id="health" class="pill">…</span>
+      </div>
+    </header>
+
+    <main class="ops-shell">
+      <section class="ops-card">
+        <h1>Live reliability</h1>
+        <p class="lede">Latency, HITL rate, and confidence from recent agent runs.</p>
+        <div class="stat-grid" id="stats"></div>
+      </section>
+
+      <section class="ops-card">
+        <h2>Job requirement proof map</h2>
+        <p class="lede">Every JD signal → code path → how to demo it.</p>
+        <div id="proof" class="proof-list"></div>
+        <p class="beyond-label">Beyond expectation</p>
+        <ul id="beyond" class="list"></ul>
+      </section>
+
+      <section class="ops-card wide">
+        <h2>Recent runs</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Latency</th>
+                <th>Confidence</th>
+                <th>HITL</th>
+                <th>Question</th>
+                <th>Patterns</th>
+              </tr>
+            </thead>
+            <tbody id="runs"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/static/ops.js" type="module"></script>
+  </body>
+</html>

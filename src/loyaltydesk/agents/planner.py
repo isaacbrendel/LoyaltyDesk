@@ -29,12 +29,19 @@ def available_provider() -> str:
     return "demo"
 
 
-def plan_route(question: str) -> list[AgentRole]:
+def plan_route(question: str, history: list[dict[str, str]] | None = None) -> list[AgentRole]:
     q = question.lower()
     roles: list[AgentRole] = []
-    if re.search(r"\b(sql|query|how many|top|segment|campaign uplift|region|tier mix)\b", q) or "churn" in q:
+    followup = bool(_member_id(question, history)) and re.search(
+        r"\b(their|them|that member|preferred|categories|follow.?up|also)\b", q
+    )
+    if (
+        re.search(r"\b(sql|query|how many|top|segment|campaign uplift|region|tier mix)\b", q)
+        or "churn" in q
+        or followup
+    ):
         roles.append(AgentRole.SQL_ANALYST)
-    if re.search(r"\b(member|m\d{4}|snapshot|points balance)\b", q):
+    if re.search(r"\b(member|m\d{4}|snapshot|points balance)\b", q) or followup:
         roles.append(AgentRole.SQL_ANALYST)
     if re.search(r"\b(earn|burn|redeem|policy|rule|handbook|multiplier|expir)\b", q):
         roles.append(AgentRole.LOYALTY_LOGIC)
@@ -51,15 +58,40 @@ def plan_route(question: str) -> list[AgentRole]:
     return seen
 
 
-def _member_id(question: str) -> str | None:
+def _member_id(question: str, history: list[dict[str, str]] | None = None) -> str | None:
     match = re.search(r"\bM\d{4}\b", question, re.IGNORECASE)
-    return match.group(0).upper() if match else None
+    if match:
+        return match.group(0).upper()
+    if history:
+        for msg in reversed(history):
+            found = re.search(r"\bM\d{4}\b", msg.get("content", ""), re.IGNORECASE)
+            if found:
+                return found.group(0).upper()
+    return None
 
 
-def demo_tool_calls(role: AgentRole, question: str) -> list[dict[str, Any]]:
+def skills_for_question(question: str) -> list[str]:
+    q = question.lower()
+    skills: list[str] = []
+    if any(k in q for k in ("churn", "inactive", "win-back", "winback")):
+        skills.append("churn_playbook")
+    if any(k in q for k in ("earn", "burn", "redeem", "multiplier", "tier", "policy")):
+        skills.append("handbook_rag")
+    if any(k in q for k in ("campaign", "uplift", "member", "sql", "how many", "region")) or re.search(
+        r"\bm\d{4}\b", q
+    ):
+        skills.append("program_sql")
+    return skills or ["program_sql"]
+
+
+def demo_tool_calls(
+    role: AgentRole,
+    question: str,
+    history: list[dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     """Produce tool calls a supervisor/subagent would emit."""
     q = question.lower()
-    mid = _member_id(question)
+    mid = _member_id(question, history)
 
     if role == AgentRole.SQL_ANALYST:
         if mid:
@@ -128,10 +160,22 @@ def synthesize_answer(
     tool_results: list[dict[str, Any]],
     sql_used: list[str],
     citations: list[dict[str, Any]],
+    history: list[dict[str, str]] | None = None,
 ) -> AnalystAnswer:
     insights: list[str] = []
     actions: list[str] = []
     summary_bits: list[str] = []
+    if history:
+        prior = [
+            m
+            for m in history
+            if m.get("role") == "user" and m.get("content", "").strip() != question.strip()
+        ][-2:]
+        if prior:
+            insights.append(
+                "Using short-term session memory: "
+                + " | ".join(m.get("content", "")[:80] for m in prior)
+            )
 
     for item in tool_results:
         if item.get("ok") is False:
@@ -225,6 +269,7 @@ async def maybe_llm_synthesize(
     tool_results: list[dict[str, Any]],
     sql_used: list[str],
     citations: list[dict[str, Any]],
+    history: list[dict[str, str]] | None = None,
 ) -> AnalystAnswer:
     """Optional LLM polish — falls back to deterministic synthesis."""
     provider = available_provider()
@@ -234,6 +279,7 @@ async def maybe_llm_synthesize(
         tool_results=tool_results,
         sql_used=sql_used,
         citations=citations,
+        history=history,
     )
     if provider == "demo":
         return base

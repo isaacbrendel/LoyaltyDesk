@@ -276,10 +276,19 @@ composer.addEventListener("submit", async (event) => {
         if (!line) continue;
         const payload = JSON.parse(line.slice(6));
         if (payload.event === "route") {
+          const skills = (payload.skills || []).join(", ");
           pipelineEl.textContent = (payload.agents || []).join(" → ");
-          statusEl.textContent = `Agents: ${pipelineEl.textContent}`;
+          statusEl.textContent = skills
+            ? `Live route · skills: ${skills}`
+            : `Agents: ${pipelineEl.textContent}`;
         } else if (payload.event === "handoff") {
-          statusEl.textContent = `Handoff ${payload.from} → ${payload.to}`;
+          const dest = Array.isArray(payload.to) ? payload.to.join(", ") : payload.to;
+          statusEl.textContent = `Live handoff ${payload.from} → ${dest}`;
+          if (payload.skills?.length) {
+            pipelineEl.textContent = payload.skills.join(" · ");
+          }
+        } else if (payload.event === "tools") {
+          statusEl.textContent = `${payload.agent} tools: ${(payload.tools || []).join(", ")}`;
         } else if (payload.event === "agent") {
           statusEl.textContent = `${payload.agent} ${payload.status}`;
           pipelineEl.textContent = payload.agent;
@@ -290,7 +299,10 @@ composer.addEventListener("submit", async (event) => {
           statusEl.textContent = "Reflection pass…";
           pipelineEl.textContent = "reflect";
         } else if (payload.event === "hitl") {
-          statusEl.textContent = "LangGraph interrupt — awaiting approval";
+          statusEl.textContent =
+            payload.status === "pending"
+              ? "LangGraph interrupt — awaiting approval"
+              : `HITL ${payload.status}`;
           pipelineEl.textContent = "hitl_gate";
         } else if (payload.event === "blocked") {
           clearSkeleton();
@@ -315,10 +327,14 @@ composer.addEventListener("submit", async (event) => {
             traces: payload.traces,
             otel: payload.otel_trace_id,
           });
+          const latency = payload.latency_ms != null ? ` · ${payload.latency_ms} ms` : "";
+          const skills = (payload.skills || []).length
+            ? ` · ${(payload.skills || []).join(", ")}`
+            : "";
           statusEl.textContent =
             payload.answer.hitl_status === "pending"
-              ? "Paused on LangGraph interrupt — approve to resume."
-              : "Done. Traces + OTEL spans persisted.";
+              ? `Paused on LangGraph interrupt — approve to resume${latency}`
+              : `Live run complete${latency}${skills}`;
           pipelineEl.textContent = "Idle";
         }
       }
