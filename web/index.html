@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoyaltyDesk — Analyst Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Fraunces:opsz,wght@9..144,500;9..144,650&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+    <header class="top">
+      <div class="brand-lockup">
+        <span class="mark" aria-hidden="true"></span>
+        <div>
+          <p class="brand">LoyaltyDesk</p>
+          <p class="tag">Internal agent platform for loyalty analysts</p>
+        </div>
+      </div>
+      <div class="meta">
+        <span id="provider" class="pill">llm: …</span>
+        <span id="health" class="pill">checking</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="hero-panel">
+        <h1>Ask the program.<br />Get evidence-backed answers.</h1>
+        <p class="lede">
+          Supervisor routes to SQL, knowledge, and loyalty-logic subagents — with
+          Snowflake-shaped data, Pydantic contracts, guardrails, and traces.
+        </p>
+        <div class="prompts" id="prompts"></div>
+      </section>
+
+      <section class="workbench" aria-label="Analyst chat">
+        <div class="transcript" id="transcript"></div>
+        <form class="composer" id="composer">
+          <label class="sr-only" for="message">Question</label>
+          <textarea
+            id="message"
+            name="message"
+            rows="2"
+            placeholder="e.g. Which members look like churn risks and what win-back should we try?"
+            required
+          ></textarea>
+          <button type="submit" id="send">Run agent</button>
+        </form>
+        <p class="status" id="status" role="status"></p>
+      </section>
+    </main>
+
+    <script src="/static/app.js" type="module"></script>
+  </body>
+</html>

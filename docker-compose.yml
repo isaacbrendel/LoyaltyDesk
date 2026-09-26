@@ -1,0 +1,12 @@
+services:
+  loyaltydesk:
+    build: .
+    ports:
+      - "3847:3847"
+    environment:
+      LOYALTYDESK_LLM_PROVIDER: demo
+    volumes:
+      - loyaltydesk-data:/app/data
+
+volumes:
+  loyaltydesk-data:
