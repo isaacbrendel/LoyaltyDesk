@@ -41,12 +41,15 @@ def main() -> None:
             return
 
         async def _run():
-            state, tracer = await run_agent(guard.text)
+            state, tracer, otel = await run_agent(guard.text)
             print(
                 json.dumps(
                     {
                         "run_id": tracer.run_id,
-                        "answer": state["answer"].model_dump(mode="json"),
+                        "otel_trace_id": otel.trace_id,
+                        "answer": state["answer"].model_dump(mode="json") if state.get("answer") else None,
+                        "hitl": state.get("hitl"),
+                        "interrupted": bool(state.get("__interrupt__")),
                         "traces": tracer.as_dicts(),
                     },
                     indent=2,

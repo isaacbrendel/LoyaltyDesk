@@ -43,8 +43,16 @@ MANIFEST: dict[str, Any] = {
     },
     "observability": {
         "traces": "jsonl",
-        "compatible_with": ["OpenTelemetry", "Langfuse", "CloudWatch", "LangSmith"],
+        "otel_export": "loyaltydesk.observability.otel:OtelTracer",
+        "compatible_with": ["OpenTelemetry", "Langfuse", "CloudWatch", "LangSmith", "ADOT"],
         "span_prefix": "loyaltydesk",
+        "agentcore_note": "AgentCore emits OTEL-compatible telemetry to CloudWatch GenAI Observability.",
+    },
+    "evaluations": {
+        "golden": "loyaltydesk.evals.golden.json",
+        "adversarial": "loyaltydesk.evals.adversarial.json",
+        "metrics": ["faithfulness", "groundedness", "llm_as_judge"],
+        "ci": ".github/workflows/ci.yml",
     },
     "gateway": {
         "module": "loyaltydesk.agentcore.gateway",

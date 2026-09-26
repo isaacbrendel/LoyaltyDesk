@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from loyaltydesk import __version__
 from loyaltydesk.agentcore.manifest import get_manifest
-from loyaltydesk.agentcore.runtime import invoke
+from loyaltydesk.agentcore.runtime import invoke, resume
 from loyaltydesk.agents.graph import stream_status
 from loyaltydesk.agents.planner import available_provider
 from loyaltydesk.api.schemas import ChatRequest, ChatResponse, HealthResponse, HitlResolveRequest
@@ -20,6 +20,7 @@ from loyaltydesk.guardrails.pipeline import apply_input_guardrails
 from loyaltydesk.hitl import HITL_STORE
 from loyaltydesk.memory import MEMORY
 from loyaltydesk.models import AnalystAnswer
+from loyaltydesk.security.owasp import control_matrix
 from loyaltydesk.snowflake.semantic_model import list_metrics
 
 WEB_DIR = Path(__file__).resolve().parents[3] / "web"
@@ -76,6 +77,11 @@ def agentcore_manifest() -> dict:
     return get_manifest()
 
 
+@app.get("/api/security/owasp")
+def owasp_matrix() -> dict:
+    return control_matrix()
+
+
 @app.get("/api/semantic/metrics")
 def semantic_metrics() -> dict:
     return {"semantic_model": "loyalty_program_v1", "metrics": list_metrics()}
@@ -97,18 +103,27 @@ def hitl_pending() -> dict:
 
 
 @app.post("/api/hitl/{run_id}/resolve")
-def hitl_resolve(run_id: str, body: HitlResolveRequest) -> dict:
+async def hitl_resolve(run_id: str, body: HitlResolveRequest) -> dict:
+    rec = HITL_STORE.get(run_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Unknown HITL run")
+    if rec.status != "pending":
+        raise HTTPException(status_code=409, detail=f"HITL already {rec.status}")
     try:
-        rec = HITL_STORE.resolve(run_id, approve=body.approve, note=body.note)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Unknown HITL run") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        payload = await resume(
+            session_id=rec.session_id,
+            approve=body.approve,
+            note=body.note,
+            run_id=run_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Resume failed: {exc}") from exc
     return {
-        "run_id": rec.run_id,
-        "status": rec.status,
-        "reviewer_note": rec.reviewer_note,
-        "resolved_at": rec.resolved_at.isoformat() if rec.resolved_at else None,
+        "run_id": run_id,
+        "status": "approved" if body.approve else "rejected",
+        "reviewer_note": body.note,
+        "answer": payload.get("answer"),
+        "thread_id": rec.session_id,
     }
 
 
@@ -134,6 +149,22 @@ async def chat(body: ChatRequest) -> ChatResponse:
 
     MEMORY.add(body.session_id, "user", guard.text)
     payload = await invoke(guard.text, session_id=body.session_id)
+    if payload.get("blocked"):
+        blocked = AnalystAnswer(
+            summary="Request denied by gateway policy.",
+            insights=payload.get("notes") or [],
+            recommended_actions=["Rephrase as a loyalty analytics question."],
+            confidence=1.0,
+            guarded=True,
+            guardrail_notes=payload.get("notes") or [],
+        )
+        return ChatResponse(
+            answer=blocked,
+            session_id=body.session_id,
+            run_id="blocked",
+            blocked=True,
+            block_reason=payload.get("notes") or [],
+        )
     answer_data = payload.get("answer")
     if answer_data is None:
         raise HTTPException(status_code=500, detail="Agent failed")
@@ -165,15 +196,20 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
         for status in stream_status(guard.text):
             yield f"data: {json.dumps(status)}\n\n"
         payload = await invoke(guard.text, session_id=body.session_id)
-        answer = payload.get("answer")
+        if payload.get("blocked"):
+            yield f"data: {json.dumps({'event': 'blocked', 'notes': payload.get('notes')})}\n\n"
+            yield 'data: {"event": "done"}\n\n'
+            return
         out = {
             "event": "answer",
             "run_id": payload.get("run_id"),
-            "answer": answer,
+            "answer": payload.get("answer"),
             "traces": payload.get("traces") or [],
             "handoffs": payload.get("handoffs") or [],
             "reflection": payload.get("reflection"),
             "hitl": payload.get("hitl"),
+            "interrupted": payload.get("interrupted"),
+            "otel_trace_id": payload.get("otel_trace_id"),
         }
         yield f"data: {json.dumps(out)}\n\n"
         yield 'data: {"event": "done"}\n\n'

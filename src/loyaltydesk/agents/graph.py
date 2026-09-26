@@ -1,20 +1,31 @@
-"""LangGraph supervisor + subagents for loyalty analyst workflows."""
+"""LangGraph supervisor + subagents with checkpointer HITL (interrupt/Command).
+
+HITL follows LangGraph docs:
+https://docs.langchain.com/oss/python/langgraph/interrupts
+"""
 
 from __future__ import annotations
 
 from typing import Any, Iterator
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 from loyaltydesk.agentcore.gateway import GATEWAY
 from loyaltydesk.agentcore.policy import requires_hitl
 from loyaltydesk.agents.planner import demo_tool_calls, maybe_llm_synthesize, plan_route
 from loyaltydesk.agents.reflect import reflect_on_answer
 from loyaltydesk.agents.state import AgentState
+from loyaltydesk.evals.metrics import score_answer
 from loyaltydesk.guardrails.pipeline import apply_output_guardrails
 from loyaltydesk.guardrails.tool_scope import ANALYST_SCOPES
 from loyaltydesk.models import AgentRole
+from loyaltydesk.observability.otel import OtelTracer
 from loyaltydesk.observability.tracing import TraceRecorder
+
+# Process-wide checkpointer so HITL can resume by thread_id (AgentCore Memory seam).
+CHECKPOINTER = MemorySaver()
 
 
 def _run_calls(
@@ -22,6 +33,8 @@ def _run_calls(
     question: str,
     granted_scopes: set[str],
     tracer: TraceRecorder,
+    *,
+    session_key: str,
 ) -> dict[str, Any]:
     calls = demo_tool_calls(role, question)
     tool_results: list[dict[str, Any]] = []
@@ -33,7 +46,9 @@ def _run_calls(
         name = call["name"]
         args = call["args"]
         tracer.emit("tool.start", role=role, tool=name, args=args)
-        payload = GATEWAY.call(name, args, granted_scopes=granted_scopes)
+        payload = GATEWAY.call(
+            name, args, granted_scopes=granted_scopes, session_key=session_key
+        )
         payload["agent"] = role.value
         tool_results.append(payload)
         if payload.get("ok"):
@@ -56,11 +71,7 @@ def _run_calls(
                 for cite in result.get("citations") or []:
                     citations.append(cite)
             tracer.emit(
-                "tool.end",
-                role=role,
-                tool=name,
-                ok=True,
-                attempts=payload.get("attempts", 1),
+                "tool.end", role=role, tool=name, ok=True, attempts=payload.get("attempts", 1)
             )
         else:
             intermediate.append(f"{role.value}:{name}:error:{payload.get('error')}")
@@ -107,6 +118,7 @@ def build_graph(tracer: TraceRecorder | None = None):
             state["question"],
             set(state.get("granted_scopes") or ANALYST_SCOPES),
             tracer,
+            session_key=state.get("session_id") or "default",
         )
 
     def knowledge(state: AgentState) -> dict[str, Any]:
@@ -118,6 +130,7 @@ def build_graph(tracer: TraceRecorder | None = None):
             state["question"],
             set(state.get("granted_scopes") or ANALYST_SCOPES),
             tracer,
+            session_key=state.get("session_id") or "default",
         )
 
     def loyalty_logic(state: AgentState) -> dict[str, Any]:
@@ -129,6 +142,7 @@ def build_graph(tracer: TraceRecorder | None = None):
             state["question"],
             set(state.get("granted_scopes") or ANALYST_SCOPES),
             tracer,
+            session_key=state.get("session_id") or "default",
         )
 
     async def synthesize(state: AgentState) -> dict[str, Any]:
@@ -144,12 +158,22 @@ def build_graph(tracer: TraceRecorder | None = None):
         patterns = ["supervisor_router", "tool_calling", "structured_output"]
         if state.get("handoffs"):
             patterns.append("subagent_handoff")
-        answer = answer.model_copy(update={"patterns_used": patterns})
+        metrics = score_answer(
+            answer.model_dump(mode="json"),
+            tool_results=state.get("tool_results") or [],
+        )
+        answer = answer.model_copy(
+            update={
+                "patterns_used": patterns,
+                "guardrail_notes": list(answer.guardrail_notes)
+                + [f"faithfulness={metrics['faithfulness']}", f"groundedness={metrics['groundedness']}"],
+            }
+        )
         tracer.emit(
             "synthesize.end",
             role=AgentRole.SUPERVISOR,
             confidence=answer.confidence,
-            guarded=answer.guarded,
+            **metrics,
         )
         return {"answer": answer}
 
@@ -176,34 +200,47 @@ def build_graph(tracer: TraceRecorder | None = None):
         return {"answer": updated, "reflection": reflection}
 
     def hitl_gate(state: AgentState) -> dict[str, Any]:
+        """LangGraph-native HITL via interrupt() + checkpointer resume."""
         answer = state.get("answer")
         need = bool(state.get("force_hitl")) or requires_hitl(state["question"])
         if not need or answer is None:
             return {"hitl": {"status": "not_required"}}
-        tracer.emit("hitl.pending", role=AgentRole.SUPERVISOR, question=state["question"])
+
+        tracer.emit("hitl.interrupt", role=AgentRole.SUPERVISOR, question=state["question"])
+        # Pause here — resume value becomes `decision` (LangGraph docs pattern).
+        decision = interrupt(
+            {
+                "kind": "program_mutation_approval",
+                "question": state["question"],
+                "summary": answer.summary,
+                "recommended_actions": answer.recommended_actions,
+            }
+        )
+        approved = bool(
+            (isinstance(decision, dict) and decision.get("approve"))
+            or decision is True
+            or str(decision).lower() in {"approve", "approved", "yes", "true"}
+        )
+        note = ""
+        if isinstance(decision, dict):
+            note = str(decision.get("note") or "")
+        status = "approved" if approved else "rejected"
         patterns = list(answer.patterns_used or [])
         if "human_in_the_loop" not in patterns:
             patterns.append("human_in_the_loop")
+        if "langgraph_interrupt" not in patterns:
+            patterns.append("langgraph_interrupt")
         updated = answer.model_copy(
             update={
-                "hitl_status": "pending",
+                "hitl_status": status,
                 "patterns_used": patterns,
                 "recommended_actions": list(answer.recommended_actions)
-                + ["Awaiting analyst approval before any program change is applied."],
-                "summary": (
-                    answer.summary
-                    + " This proposal is gated for human-in-the-loop approval "
-                    "(program mutation / production push)."
-                ),
+                + ([f"HITL {status}" + (f": {note}" if note else "")]),
+                "summary": answer.summary + f" Human decision: {status}.",
             }
         )
-        return {
-            "answer": updated,
-            "hitl": {
-                "status": "pending",
-                "reason": "Program mutation or explicit approval requested.",
-            },
-        }
+        tracer.emit("hitl.resolved", role=AgentRole.SUPERVISOR, status=status, note=note)
+        return {"answer": updated, "hitl": {"status": status, "note": note}}
 
     graph = StateGraph(AgentState)
     graph.add_node("supervisor", supervisor)
@@ -223,7 +260,11 @@ def build_graph(tracer: TraceRecorder | None = None):
     graph.add_edge("reflect", "hitl_gate")
     graph.add_edge("hitl_gate", END)
 
-    return graph.compile(), tracer
+    return graph.compile(checkpointer=CHECKPOINTER), tracer
+
+
+def _thread_config(session_id: str) -> dict[str, Any]:
+    return {"configurable": {"thread_id": session_id}}
 
 
 async def run_agent(
@@ -232,29 +273,75 @@ async def run_agent(
     session_id: str = "default",
     granted_scopes: set[str] | None = None,
     force_hitl: bool = False,
-) -> tuple[Any, TraceRecorder]:
+) -> tuple[Any, TraceRecorder, OtelTracer]:
     compiled, tracer = build_graph()
+    otel = OtelTracer()
     tracer.emit("run.start", question=question, session_id=session_id)
-    state = await compiled.ainvoke(
-        {
-            "question": question,
-            "session_id": session_id,
-            "tool_results": [],
-            "sql_used": [],
-            "citations": [],
-            "intermediate": [],
-            "handoffs": [],
-            "force_hitl": force_hitl,
-            "granted_scopes": sorted(granted_scopes or ANALYST_SCOPES),
+    with otel.span("loyaltydesk.run", session_id=session_id, question=question[:160]):
+        state = await compiled.ainvoke(
+            {
+                "question": question,
+                "session_id": session_id,
+                "tool_results": [],
+                "sql_used": [],
+                "citations": [],
+                "intermediate": [],
+                "handoffs": [],
+                "force_hitl": force_hitl,
+                "granted_scopes": sorted(granted_scopes or ANALYST_SCOPES),
+            },
+            config=_thread_config(session_id),
+        )
+    interrupted = bool(state.get("__interrupt__"))
+    if interrupted:
+        # Surface pending HITL on the draft answer for the UI.
+        answer = state.get("answer")
+        if answer is not None:
+            patterns = list(answer.patterns_used or [])
+            for p in ("human_in_the_loop", "langgraph_interrupt"):
+                if p not in patterns:
+                    patterns.append(p)
+            state["answer"] = answer.model_copy(
+                update={
+                    "hitl_status": "pending",
+                    "patterns_used": patterns,
+                    "summary": answer.summary
+                    + " Awaiting human-in-the-loop approval (LangGraph interrupt).",
+                    "recommended_actions": list(answer.recommended_actions)
+                    + ["Awaiting analyst approval before any program change is applied."],
+                }
+            )
+        state["hitl"] = {
+            "status": "pending",
+            "interrupt": [
+                getattr(i, "value", i) for i in (state.get("__interrupt__") or [])
+            ],
         }
+    tracer.emit("run.end", ok=state.get("answer") is not None, interrupted=interrupted)
+    tracer.persist()
+    otel.persist()
+    return state, tracer, otel
+
+
+async def resume_agent(
+    session_id: str,
+    *,
+    approve: bool,
+    note: str = "",
+) -> tuple[Any, TraceRecorder]:
+    """Resume a graph paused on interrupt() — same thread_id required."""
+    compiled, tracer = build_graph()
+    tracer.emit("hitl.resume", session_id=session_id, approve=approve)
+    state = await compiled.ainvoke(
+        Command(resume={"approve": approve, "note": note}),
+        config=_thread_config(session_id),
     )
-    tracer.emit("run.end", ok=state.get("answer") is not None)
+    tracer.emit("run.end", ok=state.get("answer") is not None, resumed=True)
     tracer.persist()
     return state, tracer
 
 
 def stream_status(question: str) -> Iterator[dict[str, Any]]:
-    """Simple status stream for the UI when full token streaming is demo-mode."""
     route = plan_route(question)
     yield {"event": "route", "agents": [r.value for r in route]}
     for role in route:

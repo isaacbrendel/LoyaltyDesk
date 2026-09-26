@@ -4,23 +4,25 @@
 
 Repo: [isaacbrendel/genesis](https://cursor.com/codebase/isaacbrendel/genesis)
 
+Deep research notes (citations): [`docs/RESEARCH.md`](docs/RESEARCH.md) · Interview script: [`docs/INTERVIEW.md`](docs/INTERVIEW.md)
+
 ## What it shows (mapped to the role)
 
 | Job signal | Where it lives |
 |---|---|
 | Python agent harness, tool-calling, structured outputs | `agents/`, `models.py`, `tools/` |
 | LangGraph supervisor + subagents + handoffs | `agents/graph.py` |
-| Reflection + human-in-the-loop | `agents/reflect.py`, `hitl.py`, HITL UI controls |
-| AgentCore-shaped packaging (runtime, gateway, memory, policy, skills) | `agentcore/` + `GET /api/agentcore/manifest` |
-| Tool retries + auth scopes | `agentcore/gateway.py`, `guardrails/tool_scope.py` |
-| Snowflake program data + SQL | DuckDB stand-in in `snowflake/client.py` |
-| Cortex Analyst / semantic model | `snowflake/semantic_model.py` → tool `ask_semantic` |
-| Cortex Search-shaped RAG | `search_knowledge` over handbook docs |
-| Evals: golden set, LLM-as-judge/rubric, CI | `evals/` + `.github/workflows/ci.yml` |
-| Guardrails: injection, PII, read-only SQL | `guardrails/` |
-| Observability / traces | `observability/` → `data/traces/` |
-| Docker + FastAPI streaming | `Dockerfile`, `/api/chat/stream` |
-| Interview walkthrough | [`docs/INTERVIEW.md`](docs/INTERVIEW.md) |
+| **LangGraph `interrupt()` + checkpointer HITL** (resume via `Command`) | `agents/graph.py` `hitl_gate` / `resume_agent` |
+| Reflection + groundedness/faithfulness | `agents/reflect.py`, `evals/metrics.py` |
+| AgentCore Runtime / Gateway / Memory / Policy / Observability / Evals | `agentcore/` + `GET /api/agentcore/manifest` |
+| Gateway retries, rate limit, circuit breaker, Cedar-shaped policy | `agentcore/gateway.py`, `policy_engine.py` |
+| OTEL-shaped spans (CloudWatch GenAI / ADOT compatible) | `observability/otel.py` |
+| Snowflake + Cortex Analyst semantic metrics | `snowflake/` + `ask_semantic` |
+| Cortex Search-shaped RAG | `search_knowledge` |
+| Golden + **adversarial/OWASP** evals in CI | `evals/` + `.github/workflows/ci.yml` |
+| OWASP LLM Top 10 control matrix | `security/owasp.py` + `/api/security/owasp` |
+| Bedrock adapter seam | `llm/bedrock.py` |
+| Docker + FastAPI streaming UI | `web/`, `/api/chat/stream` |
 
 > No AWS account required. DuckDB stands in for Snowflake; the demo LLM planner runs offline. Add `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` for live summarization + LLM-as-judge.
 

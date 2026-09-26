@@ -4,16 +4,25 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LoyaltyDesk — Analyst Agent</title>
+    <meta
+      name="description"
+      content="Evidence-backed loyalty analyst agent with AgentCore seams, reflection, and human-in-the-loop."
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Fraunces:opsz,wght@9..144,500;9..144,650&display=swap"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,500;9..144,650;9..144,700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <div class="atmosphere" aria-hidden="true"></div>
+    <div class="atmosphere" aria-hidden="true">
+      <canvas id="grain" width="1" height="1"></canvas>
+    </div>
+
+    <a class="skip" href="#workbench">Skip to workbench</a>
+
     <header class="top">
       <div class="brand-lockup">
         <span class="mark" aria-hidden="true"></span>
@@ -22,34 +31,50 @@
           <p class="tag">Internal agent platform for loyalty analysts</p>
         </div>
       </div>
-      <div class="meta">
+      <div class="meta" aria-live="polite">
         <span id="provider" class="pill">llm: …</span>
         <span id="health" class="pill">checking</span>
+        <span id="version" class="pill">v…</span>
       </div>
     </header>
 
     <main class="shell">
       <section class="hero-panel">
-        <h1>Ask the program.<br />Get evidence-backed answers.</h1>
+        <p class="eyebrow">Program intelligence</p>
+        <h1>Ask the program.<br />Leave with evidence.</h1>
         <p class="lede">
-          AgentCore-shaped runtime: supervisor handoffs, Cortex-style semantic SQL,
-          reflection, HITL on program changes, evals in CI.
+          Supervisor handoffs, Cortex-shaped semantic SQL, reflection, OTEL traces,
+          and LangGraph interrupt HITL — packaged like AgentCore.
         </p>
         <div class="prompts" id="prompts"></div>
+        <details class="rail">
+          <summary>Security &amp; eval posture</summary>
+          <ul id="posture" class="posture">
+            <li>Loading control matrix…</li>
+          </ul>
+        </details>
       </section>
 
-      <section class="workbench" aria-label="Analyst chat">
-        <div class="transcript" id="transcript"></div>
+      <section class="workbench" id="workbench" aria-label="Analyst chat">
+        <div class="workbench-head">
+          <h2>Workbench</h2>
+          <p id="pipeline" class="pipeline">Idle</p>
+        </div>
+        <div class="transcript" id="transcript" tabindex="0"></div>
         <form class="composer" id="composer">
           <label class="sr-only" for="message">Question</label>
           <textarea
             id="message"
             name="message"
             rows="2"
-            placeholder="e.g. Which members look like churn risks and what win-back should we try?"
+            maxlength="4000"
+            placeholder="Ask about churn, earn/burn rules, campaigns, member M1004, or request an approval…"
             required
           ></textarea>
-          <button type="submit" id="send">Run agent</button>
+          <div class="composer-actions">
+            <span id="charcount" class="charcount">0 / 4000</span>
+            <button type="submit" id="send">Run agent</button>
+          </div>
         </form>
         <p class="status" id="status" role="status"></p>
       </section>

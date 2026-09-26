@@ -1,9 +1,8 @@
 import pytest
 
 from loyaltydesk.agentcore.manifest import get_manifest
-from loyaltydesk.agentcore.runtime import invoke
+from loyaltydesk.agentcore.runtime import invoke, resume
 from loyaltydesk.data.seed import seed_warehouse
-from loyaltydesk.hitl import HITL_STORE
 from loyaltydesk.snowflake.semantic_model import ask_semantic, list_metrics
 
 
@@ -28,23 +27,29 @@ def test_semantic_model_resolves_churn():
 
 
 @pytest.mark.asyncio
-async def test_runtime_hitl_pending_and_resolve():
+async def test_runtime_hitl_interrupt_and_resume():
+    session = "hitl-thread-1"
     payload = await invoke(
         "Approve and deploy campaign C11 Travel Bonus Week to production.",
-        session_id="hitl-test",
+        session_id=session,
     )
+    assert payload["interrupted"] is True
     assert payload["answer"]["hitl_status"] == "pending"
-    assert "human_in_the_loop" in payload["answer"]["patterns_used"]
+    assert "langgraph_interrupt" in payload["answer"]["patterns_used"]
     run_id = payload["run_id"]
-    rec = HITL_STORE.get(run_id)
-    assert rec is not None
-    resolved = HITL_STORE.resolve(run_id, approve=True, note="ship it")
-    assert resolved.status == "approved"
+
+    resumed = await resume(session_id=session, approve=True, note="ship it", run_id=run_id)
+    assert resumed["answer"]["hitl_status"] == "approved"
+    assert "Human decision: approved" in resumed["answer"]["summary"]
 
 
 @pytest.mark.asyncio
 async def test_reflection_notes_present():
-    payload = await invoke("Which loyalty campaigns have the highest uplift right now?")
+    payload = await invoke(
+        "Which loyalty campaigns have the highest uplift right now?",
+        session_id="reflect-thread",
+    )
     assert payload["answer"]["reflection_notes"]
     assert "reflection" in payload["answer"]["patterns_used"]
     assert payload["answer"]["sql_used"]
+    assert payload.get("otel_trace_id")

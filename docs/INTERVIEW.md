@@ -49,9 +49,20 @@ loyalty platform role (AgentCore, LangGraph, Snowflake, evals, guardrails).
 uv run loyaltydesk seed
 uv run loyaltydesk ask "Which members look like churn risks and what win-back should we try?"
 uv run loyaltydesk ask "Approve and deploy campaign C11 Travel Bonus Week to production."
-uv run loyaltydesk-eval
-curl -s localhost:3847/api/agentcore/manifest | jq .subagents
+uv run pytest -q          # prove unit suite
+uv run loyaltydesk-eval   # golden + adversarial (must be 0 failed)
+curl -s localhost:3847/api/agentcore/manifest | jq '.subagents,.observability,.evaluations'
+curl -s localhost:3847/api/security/owasp | jq '.mitigated,.total'
 ```
+
+## Research-backed talking points
+
+See [`RESEARCH.md`](RESEARCH.md). Call out specifically:
+
+1. HITL uses LangGraph **`interrupt()` + MemorySaver + `Command(resume=...)`** — not a fake flag.
+2. AgentCore Observability is **OTEL-compatible**; we emit the same span shape locally.
+3. Policy/guardrails run at the **gateway**, outside the model's ability to reason around them.
+4. Evals include **adversarial/OWASP** cases and faithfulness/groundedness metrics in CI.
 
 ## Honest gaps (builds trust)
 
