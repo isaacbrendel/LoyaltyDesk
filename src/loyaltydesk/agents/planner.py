@@ -193,6 +193,9 @@ def synthesize_answer(
         elif name == "search_knowledge" and isinstance(result, list):
             for hit in result[:2]:
                 insights.append(f"Knowledge: {hit.get('title')} / {hit.get('section')} — {hit.get('content')}")
+                content = (hit.get("content") or "").lower()
+                if "win-back" in content or "winback" in content or "90+" in content:
+                    actions.append(hit.get("content") or "Run a targeted win-back offer for inactive members.")
         elif name == "explain_loyalty_rule" and isinstance(result, dict):
             summary_bits.append(result.get("summary") or "")
             actions.extend(result.get("edge_cases") or [])
